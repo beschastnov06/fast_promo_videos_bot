@@ -53,9 +53,16 @@ async def process_video(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     process = None
     ad_text_path = output_path.with_name(f"{output_path.stem}_ad.txt")
+    normalized_banner_path = (
+        output_path.with_name(f"{output_path.stem}_banner.png") if ad_banner_path else None
+    )
     ad_text_path.write_text(_prepare_ad_text(ad_text), encoding="utf-8")
 
     try:
+        if ad_banner_path and normalized_banner_path:
+            await _normalize_banner(ad_banner_path, normalized_banner_path)
+            ad_banner_path = normalized_banner_path
+
         base_filters = [
             f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease",
             f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:black",
@@ -69,12 +76,7 @@ async def process_video(
             filter_complex = ";".join(
                 [
                     f"[0:v]{','.join(base_filters)}[base]",
-                    (
-                        f"[1:v]scale={WIDTH}:{AD_SLOT_HEIGHT}:"
-                        "force_original_aspect_ratio=decrease,"
-                        f"pad={WIDTH}:{AD_SLOT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:black,"
-                        "format=rgba,colorchannelmixer=aa=0.95[banner]"
-                    ),
+                    "[1:v]format=rgba,colorchannelmixer=aa=0.95[banner]",
                     f"[base][banner]overlay=x=0:y={AD_TOP_MARGIN}[{final_ad_label}]",
                 ]
             )
@@ -114,7 +116,7 @@ async def process_video(
         ]
 
         if ad_banner_path:
-            cmd.extend(["-loop", "1", "-i", str(ad_banner_path)])
+            cmd.extend(["-i", str(ad_banner_path)])
 
         cmd.extend(
             [
@@ -185,6 +187,47 @@ async def process_video(
         logger.info("FFmpeg processing finished: %s", output_path)
     finally:
         ad_text_path.unlink(missing_ok=True)
+        if normalized_banner_path:
+            normalized_banner_path.unlink(missing_ok=True)
+
+
+async def _normalize_banner(input_path: Path, output_path: Path) -> None:
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-i",
+        str(input_path),
+        "-vf",
+        (
+            f"scale={WIDTH}:{AD_SLOT_HEIGHT}:force_original_aspect_ratio=decrease,"
+            f"pad={WIDTH}:{AD_SLOT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:white,"
+            "format=rgba"
+        ),
+        "-frames:v",
+        "1",
+        str(output_path),
+    ]
+
+    logger.info("Normalizing ad banner: input=%s output=%s", input_path, output_path)
+
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+
+    if stdout:
+        logger.debug("Banner normalize stdout:\n%s", stdout.decode("utf-8", errors="replace"))
+
+    if process.returncode != 0:
+        logger.error(
+            "Banner normalize failed with code %s. Stderr:\n%s",
+            process.returncode,
+            stderr.decode("utf-8", errors="replace"),
+        )
+        raise VideoProcessingError("Failed to prepare ad banner")
 
 
 def _drawtext(
