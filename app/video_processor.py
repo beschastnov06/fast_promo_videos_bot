@@ -77,7 +77,10 @@ async def process_video(
                 [
                     f"[0:v]{','.join(base_filters)}[base]",
                     "[1:v]format=rgba,colorchannelmixer=aa=0.95[banner]",
-                    f"[base][banner]overlay=x=0:y={AD_TOP_MARGIN}[{final_ad_label}]",
+                    (
+                        f"[base][banner]overlay=x=0:y={AD_TOP_MARGIN}:"
+                        f"eof_action=repeat:shortest=0[{final_ad_label}]"
+                    ),
                 ]
             )
             if subtitles_path:
@@ -116,7 +119,7 @@ async def process_video(
         ]
 
         if ad_banner_path:
-            cmd.extend(["-i", str(ad_banner_path)])
+            cmd.extend(["-loop", "1", "-framerate", "30", "-i", str(ad_banner_path)])
 
         cmd.extend(
             [
