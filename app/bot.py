@@ -36,7 +36,8 @@ dp = Dispatcher()
 async def start(message: Message) -> None:
     await message.answer(
         f"Привет! Отправь мне видео до {MAX_VIDEO_SIZE_MB} МБ, "
-        "а я сделаю вертикальный ролик 720x1280."
+        "а я сделаю вертикальный ролик 720x1280. "
+        "Если добавишь подпись к видео, поставлю ее субтитром снизу."
     )
 
 
@@ -63,7 +64,11 @@ async def handle_video(message: Message, bot: Bot) -> None:
 
         await bot.download_file(telegram_file.file_path, destination=input_path)
 
-        await process_video(input_path=input_path, output_path=output_path)
+        await process_video(
+            input_path=input_path,
+            output_path=output_path,
+            bottom_text=message.caption or "",
+        )
 
         await message.answer_video(
             video=FSInputFile(output_path),
