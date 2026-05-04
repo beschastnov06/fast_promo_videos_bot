@@ -123,6 +123,10 @@ async def process_video(
 
         cmd.extend(
             [
+                "-filter_threads",
+                "1",
+                "-filter_complex_threads",
+                "1",
                 "-filter_complex",
                 filter_complex,
                 "-map",
@@ -132,9 +136,13 @@ async def process_video(
                 "-c:v",
                 "libx264",
                 "-preset",
-                "veryfast",
+                "ultrafast",
                 "-crf",
                 "26",
+                "-threads",
+                "2",
+                "-x264-params",
+                "threads=2:lookahead_threads=1",
                 "-profile:v",
                 "main",
                 "-level",
