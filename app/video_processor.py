@@ -149,6 +149,8 @@ async def process_video(
                 "4.0",
                 "-pix_fmt",
                 "yuv420p",
+                "-aspect",
+                "9:16",
                 "-c:a",
                 "aac",
                 "-b:a",

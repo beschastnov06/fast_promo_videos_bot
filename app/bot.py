@@ -17,7 +17,9 @@ from app.transcriber import TranscriptionError, extract_audio, transcribe_audio
 from app.video_processor import (
     DEFAULT_AD_TEXT,
     FFmpegNotFoundError,
+    HEIGHT,
     VideoProcessingError,
+    WIDTH,
     ensure_ffmpeg_available,
     process_video,
 )
@@ -291,6 +293,8 @@ async def _process_pending_video(
 
         await message.answer_video(
             video=FSInputFile(pending.output_path),
+            width=WIDTH,
+            height=HEIGHT,
             caption="Готово!",
         )
     except VideoProcessingError:
