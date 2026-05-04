@@ -79,7 +79,7 @@ async def process_video(
                     "[1:v]format=rgba,colorchannelmixer=aa=0.95[banner]",
                     (
                         f"[base][banner]overlay=x=0:y={AD_TOP_MARGIN}:"
-                        f"eof_action=repeat:shortest=0[{final_ad_label}]"
+                        f"eof_action=repeat:shortest=1[{final_ad_label}]"
                     ),
                 ]
             )
