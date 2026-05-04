@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass
 import logging
 import uuid
 from pathlib import Path
@@ -33,8 +34,18 @@ MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
 TMP_DIR = Path("tmp")
 AD_BANNERS_DIR = TMP_DIR / "ad_banners"
 
+
+@dataclass
+class PendingVideo:
+    input_path: Path
+    audio_path: Path
+    subtitles_path: Path
+    output_path: Path
+
+
 user_ad_texts: dict[int, str] = {}
 user_ad_banners: dict[int, Path] = {}
+pending_videos: dict[int, PendingVideo] = {}
 app_config: Config | None = None
 
 
@@ -46,7 +57,7 @@ async def start(message: Message) -> None:
     await message.answer(
         f"Привет! Отправь мне видео до {MAX_VIDEO_SIZE_MB} МБ, "
         "а я сделаю вертикальный ролик 1080x1920. "
-        "Верхнюю рекламу можно задать командой /ad или отправить картинку-баннер. "
+        "После видео я попрошу рекламный текст или баннер для верхней части макета. "
         "Субтитры снизу сделаю автоматически из речи."
     )
 
@@ -59,10 +70,18 @@ async def set_ad_text(message: Message) -> None:
         return
 
     user_id = _user_id(message)
+    pending = pending_videos.get(user_id)
+    if pending:
+        await _process_pending_video(
+            message=message,
+            pending=pending,
+            ad_text=text,
+        )
+        return
+
     user_ad_texts[user_id] = text
     user_ad_banners.pop(user_id, None)
-
-    await message.answer("Верхняя текстовая рекламная плашка сохранена. Теперь отправь видео.")
+    await message.answer("Верхняя текстовая рекламная плашка сохранена.")
 
 
 @dp.message(Command("clear_ad"))
@@ -72,6 +91,9 @@ async def clear_ad(message: Message) -> None:
     if banner_path:
         banner_path.unlink(missing_ok=True)
     user_ad_texts.pop(user_id, None)
+    pending = pending_videos.pop(user_id, None)
+    if pending:
+        _cleanup_pending(pending)
 
     await message.answer(f"Верхняя рекламная плашка сброшена. Будет использоваться: {DEFAULT_AD_TEXT}")
 
@@ -79,8 +101,8 @@ async def clear_ad(message: Message) -> None:
 @dp.message(F.photo)
 async def set_ad_banner(message: Message, bot: Bot) -> None:
     user_id = _user_id(message)
-    AD_BANNERS_DIR.mkdir(parents=True, exist_ok=True)
-    banner_path = AD_BANNERS_DIR / f"{user_id}.jpg"
+    pending = pending_videos.get(user_id)
+    banner_path = pending.input_path.with_name(f"{pending.input_path.stem}_banner.jpg") if pending else AD_BANNERS_DIR / f"{user_id}.jpg"
 
     photo = message.photo[-1]
     telegram_file = await bot.get_file(photo.file_id)
@@ -90,10 +112,19 @@ async def set_ad_banner(message: Message, bot: Bot) -> None:
 
     await bot.download_file(telegram_file.file_path, destination=banner_path)
 
+    if pending:
+        await _process_pending_video(
+            message=message,
+            pending=pending,
+            ad_banner_path=banner_path,
+            cleanup_ad_banner=True,
+        )
+        return
+
     user_ad_banners[user_id] = banner_path
     user_ad_texts.pop(user_id, None)
 
-    await message.answer("Баннер сохранен как верхняя рекламная плашка. Теперь отправь видео.")
+    await message.answer("Баннер сохранен как верхняя рекламная плашка.")
 
 
 @dp.message(F.video)
@@ -112,48 +143,63 @@ async def handle_video(message: Message, bot: Bot) -> None:
     subtitles_path = TMP_DIR / f"{job_id}_subtitles.ass"
     output_path = TMP_DIR / f"{job_id}_output.mp4"
 
-    await message.answer("Видео принято, обрабатываю...")
+    user_id = _user_id(message)
+    old_pending = pending_videos.pop(user_id, None)
+    if old_pending:
+        _cleanup_pending(old_pending)
+
+    await message.answer("Видео принято.")
 
     try:
-        user_id = _user_id(message)
-        ad_banner_path = user_ad_banners.get(user_id)
-        if ad_banner_path and not ad_banner_path.exists():
-            ad_banner_path = None
-
         telegram_file = await bot.get_file(video.file_id)
         if not telegram_file.file_path:
             raise VideoProcessingError("Telegram did not return file_path for video")
 
         await bot.download_file(telegram_file.file_path, destination=input_path)
-        subtitles_file = await _create_subtitles_file(input_path, audio_path, subtitles_path)
 
-        await process_video(
+        pending_videos[user_id] = PendingVideo(
             input_path=input_path,
+            audio_path=audio_path,
+            subtitles_path=subtitles_path,
             output_path=output_path,
-            ad_text=user_ad_texts.get(user_id, DEFAULT_AD_TEXT),
-            ad_banner_path=ad_banner_path,
-            subtitles_path=subtitles_file,
         )
 
-        await message.answer_video(
-            video=FSInputFile(output_path),
-            caption="Готово!",
+        await message.answer(
+            "Вы можете добавить рекламных текст или баннер сверху макета - "
+            "отправьте то что необходимо"
         )
     except VideoProcessingError:
-        logger.exception("Video processing failed for message_id=%s", message.message_id)
+        logger.exception("Video preparation failed for message_id=%s", message.message_id)
         await message.answer("Не удалось обработать видео. Попробуй другой файл.")
-    except Exception:
-        logger.exception("Unexpected error while handling video message_id=%s", message.message_id)
-        await message.answer("Произошла ошибка. Попробуй отправить видео еще раз.")
-    finally:
         input_path.unlink(missing_ok=True)
-        audio_path.unlink(missing_ok=True)
-        subtitles_path.unlink(missing_ok=True)
-        output_path.unlink(missing_ok=True)
+    except Exception:
+        logger.exception("Unexpected error while preparing video message_id=%s", message.message_id)
+        await message.answer("Произошла ошибка. Попробуй отправить видео еще раз.")
+        input_path.unlink(missing_ok=True)
+
+
+@dp.message(F.text)
+async def handle_ad_text(message: Message) -> None:
+    user_id = _user_id(message)
+    pending = pending_videos.get(user_id)
+    if not pending:
+        await message.answer("Пожалуйста, отправь видео файлом Telegram video.")
+        return
+
+    await _process_pending_video(
+        message=message,
+        pending=pending,
+        ad_text=message.text or DEFAULT_AD_TEXT,
+    )
 
 
 @dp.message()
 async def handle_other(message: Message) -> None:
+    user_id = _user_id(message)
+    if pending_videos.get(user_id):
+        await message.answer("Отправь рекламный текст сообщением или картинку-баннер.")
+        return
+
     await message.answer("Пожалуйста, отправь видео файлом Telegram video.")
 
 
@@ -214,6 +260,56 @@ async def _create_subtitles_file(
 
     write_ass_subtitles(segments=segments, output_path=subtitles_path)
     return subtitles_path
+
+
+async def _process_pending_video(
+    message: Message,
+    pending: PendingVideo,
+    ad_text: str = DEFAULT_AD_TEXT,
+    ad_banner_path: Path | None = None,
+    cleanup_ad_banner: bool = False,
+) -> None:
+    user_id = _user_id(message)
+    pending_videos.pop(user_id, None)
+
+    await message.answer("Рекламная плашка принята. Обрабатываю видео...")
+
+    try:
+        subtitles_file = await _create_subtitles_file(
+            input_path=pending.input_path,
+            audio_path=pending.audio_path,
+            subtitles_path=pending.subtitles_path,
+        )
+
+        await process_video(
+            input_path=pending.input_path,
+            output_path=pending.output_path,
+            ad_text=ad_text,
+            ad_banner_path=ad_banner_path,
+            subtitles_path=subtitles_file,
+        )
+
+        await message.answer_video(
+            video=FSInputFile(pending.output_path),
+            caption="Готово!",
+        )
+    except VideoProcessingError:
+        logger.exception("Video processing failed for message_id=%s", message.message_id)
+        await message.answer("Не удалось обработать видео. Попробуй другой файл.")
+    except Exception:
+        logger.exception("Unexpected error while processing pending video")
+        await message.answer("Произошла ошибка. Попробуй отправить видео еще раз.")
+    finally:
+        _cleanup_pending(pending)
+        if cleanup_ad_banner and ad_banner_path:
+            ad_banner_path.unlink(missing_ok=True)
+
+
+def _cleanup_pending(pending: PendingVideo) -> None:
+    pending.input_path.unlink(missing_ok=True)
+    pending.audio_path.unlink(missing_ok=True)
+    pending.subtitles_path.unlink(missing_ok=True)
+    pending.output_path.unlink(missing_ok=True)
 
 
 def _command_payload(text: str) -> str:
