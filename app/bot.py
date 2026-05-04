@@ -24,7 +24,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-MAX_VIDEO_SIZE_BYTES = 100 * 1024 * 1024
+MAX_VIDEO_SIZE_MB = 20
+MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
 TMP_DIR = Path("tmp")
 
 
@@ -34,7 +35,8 @@ dp = Dispatcher()
 @dp.message(CommandStart())
 async def start(message: Message) -> None:
     await message.answer(
-        "Привет! Отправь мне видео до 100 МБ, а я сделаю вертикальный ролик 1080x1920."
+        f"Привет! Отправь мне видео до {MAX_VIDEO_SIZE_MB} МБ, "
+        "а я сделаю вертикальный ролик 720x1280."
     )
 
 
@@ -43,7 +45,9 @@ async def handle_video(message: Message, bot: Bot) -> None:
     video = message.video
 
     if video.file_size and video.file_size > MAX_VIDEO_SIZE_BYTES:
-        await message.answer("Видео слишком большое. Максимальный размер для MVP — 100 МБ.")
+        await message.answer(
+            f"Видео слишком большое. Максимальный размер сейчас — {MAX_VIDEO_SIZE_MB} МБ."
+        )
         return
 
     job_id = uuid.uuid4().hex

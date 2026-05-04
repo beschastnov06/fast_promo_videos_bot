@@ -6,9 +6,10 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-WIDTH = 1080
-HEIGHT = 1920
+WIDTH = 720
+HEIGHT = 1280
 PROCESS_TIMEOUT_SECONDS = 300
+FONT_FILE = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 TOP_TEXT = "Смотри до конца"
 BOTTOM_TEXT = "Реклама: @example"
@@ -35,19 +36,21 @@ async def process_video(input_path: Path, output_path: Path) -> None:
 
     vf = ",".join(
         [
-            f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase",
-            f"crop={WIDTH}:{HEIGHT}",
-            "drawbox=x=0:y=70:w=iw:h=150:color=black@0.55:t=fill",
+            f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease",
+            f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:black",
+            "fps=30",
+            "setsar=1",
+            "drawbox=x=0:y=50:w=iw:h=105:color=black@0.55:t=fill",
             _drawtext(
                 text=TOP_TEXT,
-                y="115",
-                fontsize=64,
+                y="78",
+                fontsize=42,
             ),
-            "drawbox=x=0:y=ih-220:w=iw:h=150:color=black@0.55:t=fill",
+            "drawbox=x=0:y=ih-155:w=iw:h=105:color=black@0.55:t=fill",
             _drawtext(
                 text=BOTTOM_TEXT,
-                y="h-175",
-                fontsize=58,
+                y="h-127",
+                fontsize=38,
             ),
         ]
     )
@@ -69,17 +72,26 @@ async def process_video(input_path: Path, output_path: Path) -> None:
         "-preset",
         "veryfast",
         "-crf",
-        "23",
+        "26",
+        "-profile:v",
+        "main",
+        "-level",
+        "3.1",
         "-pix_fmt",
         "yuv420p",
         "-c:a",
-        "copy",
+        "aac",
+        "-b:a",
+        "128k",
+        "-ar",
+        "44100",
         "-movflags",
         "+faststart",
         str(output_path),
     ]
 
     logger.info("Starting FFmpeg processing: input=%s output=%s", input_path, output_path)
+    logger.debug("FFmpeg command: %s", " ".join(cmd))
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -119,7 +131,7 @@ def _drawtext(text: str, y: str, fontsize: int) -> str:
     escaped = _escape_drawtext(text)
     return (
         "drawtext="
-        "font='DejaVu Sans':"
+        f"fontfile='{FONT_FILE}':"
         f"fontcolor=white:"
         f"fontsize={fontsize}:"
         f"text='{escaped}':"
