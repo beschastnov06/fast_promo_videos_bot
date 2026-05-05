@@ -141,6 +141,10 @@ async def process_video(
                 "[v]",
                 "-map",
                 "0:a?",
+                "-map_metadata",
+                "-1",
+                "-map_chapters",
+                "-1",
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -167,6 +171,10 @@ async def process_video(
                 "44100",
                 "-movflags",
                 "+faststart",
+                "-metadata",
+                "encoder=",
+                "-metadata",
+                "comment=",
                 str(output_path),
             ]
         )
