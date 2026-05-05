@@ -9,7 +9,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.filters import Command
 from aiogram.filters import CommandStart
-from aiogram.types import FSInputFile, Message
+from aiogram.types import FSInputFile, KeyboardButton, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
 
 from app.config import Config, load_config
 from app.subtitles import write_ass_subtitles
@@ -35,6 +35,8 @@ MAX_VIDEO_SIZE_MB = 20
 MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
 TMP_DIR = Path("tmp")
 AD_BANNERS_DIR = TMP_DIR / "ad_banners"
+NO_CONTENT_TEXT = "Без контента"
+MAX_AD_TEXT_CHARS = 120
 
 
 @dataclass
@@ -57,10 +59,10 @@ dp = Dispatcher()
 @dp.message(CommandStart())
 async def start(message: Message) -> None:
     await message.answer(
-        f"Привет! Отправь мне видео до {MAX_VIDEO_SIZE_MB} МБ, "
+        f"Отправьте видео до {MAX_VIDEO_SIZE_MB} МБ, "
         "а я сделаю вертикальный ролик 1080x1920. "
-        "После видео я попрошу рекламный текст или баннер для верхней части макета. "
-        "Субтитры снизу сделаю автоматически из речи."
+        "После отправки видео я попрошу рекламный текст или баннер для верхней части макета, "
+        "а субтитры снизу сделаю автоматически из аудио в видео."
     )
 
 
@@ -70,10 +72,15 @@ async def set_ad_text(message: Message) -> None:
     if not text:
         await message.answer("Напиши текст после команды, например: /ad Реклама: @example")
         return
+    if len(text) > MAX_AD_TEXT_CHARS:
+        await message.answer(f"Ошибка: рекламный текст слишком длинный. Максимум — {MAX_AD_TEXT_CHARS} символов.")
+        return
 
     user_id = _user_id(message)
     pending = pending_videos.get(user_id)
     if pending:
+        await message.answer("Рекламный контент обрабатывается", reply_markup=ReplyKeyboardRemove())
+        await message.answer("Рекламный контент обработан")
         await _process_pending_video(
             message=message,
             pending=pending,
@@ -109,12 +116,14 @@ async def set_ad_banner(message: Message, bot: Bot) -> None:
     photo = message.photo[-1]
     telegram_file = await bot.get_file(photo.file_id)
     if not telegram_file.file_path:
-        await message.answer("Не удалось скачать баннер. Попробуй другую картинку.")
+        await message.answer("Ошибка: не удалось скачать баннер. Попробуй другую картинку.")
         return
 
+    await message.answer("Рекламный контент обрабатывается", reply_markup=ReplyKeyboardRemove())
     await bot.download_file(telegram_file.file_path, destination=banner_path)
 
     if pending:
+        await message.answer("Рекламный контент обработан")
         await _process_pending_video(
             message=message,
             pending=pending,
@@ -134,9 +143,7 @@ async def handle_video(message: Message, bot: Bot) -> None:
     video = message.video
 
     if video.file_size and video.file_size > MAX_VIDEO_SIZE_BYTES:
-        await message.answer(
-            f"Видео слишком большое. Максимальный размер сейчас — {MAX_VIDEO_SIZE_MB} МБ."
-        )
+        await message.answer(f"Ошибка: видео слишком большое. Максимальный размер сейчас — {MAX_VIDEO_SIZE_MB} МБ.")
         return
 
     job_id = uuid.uuid4().hex
@@ -149,8 +156,6 @@ async def handle_video(message: Message, bot: Bot) -> None:
     old_pending = pending_videos.pop(user_id, None)
     if old_pending:
         _cleanup_pending(old_pending)
-
-    await message.answer("Видео принято.")
 
     try:
         telegram_file = await bot.get_file(video.file_id)
@@ -167,16 +172,19 @@ async def handle_video(message: Message, bot: Bot) -> None:
         )
 
         await message.answer(
-            "Вы можете добавить рекламных текст или баннер сверху макета - "
-            "отправьте то что необходимо"
+            "Видео принято.\n\n"
+            "Вы можете добавить рекламный контент (текст или баннер) сверху макета - "
+            "отправьте то что необходимо.\n\n"
+            f"Если дополнительного контента нет отправьте сообщение \"{NO_CONTENT_TEXT}\"",
+            reply_markup=_no_content_keyboard(),
         )
-    except VideoProcessingError:
+    except VideoProcessingError as exc:
         logger.exception("Video preparation failed for message_id=%s", message.message_id)
-        await message.answer("Не удалось обработать видео. Попробуй другой файл.")
+        await message.answer(f"Ошибка: не удалось принять видео. {exc}")
         input_path.unlink(missing_ok=True)
-    except Exception:
+    except Exception as exc:
         logger.exception("Unexpected error while preparing video message_id=%s", message.message_id)
-        await message.answer("Произошла ошибка. Попробуй отправить видео еще раз.")
+        await message.answer(f"Ошибка: не удалось принять видео. {exc}")
         input_path.unlink(missing_ok=True)
 
 
@@ -188,10 +196,26 @@ async def handle_ad_text(message: Message) -> None:
         await message.answer("Пожалуйста, отправь видео файлом Telegram video.")
         return
 
+    text = (message.text or "").strip()
+    if text.casefold() == NO_CONTENT_TEXT.casefold():
+        await message.answer("Видео будет без рекламного контента", reply_markup=ReplyKeyboardRemove())
+        await _process_pending_video(
+            message=message,
+            pending=pending,
+            ad_text=None,
+        )
+        return
+
+    if len(text) > MAX_AD_TEXT_CHARS:
+        await message.answer(f"Ошибка: рекламный текст слишком длинный. Максимум — {MAX_AD_TEXT_CHARS} символов.")
+        return
+
+    await message.answer("Рекламный контент обрабатывается", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Рекламный контент обработан")
     await _process_pending_video(
         message=message,
         pending=pending,
-        ad_text=message.text or DEFAULT_AD_TEXT,
+        ad_text=text,
     )
 
 
@@ -199,7 +223,7 @@ async def handle_ad_text(message: Message) -> None:
 async def handle_other(message: Message) -> None:
     user_id = _user_id(message)
     if pending_videos.get(user_id):
-        await message.answer("Отправь рекламный текст сообщением или картинку-баннер.")
+        await message.answer("Отправь рекламный текст сообщением, картинку-баннер или нажми «Без контента».")
         return
 
     await message.answer("Пожалуйста, отправь видео файлом Telegram video.")
@@ -274,7 +298,7 @@ async def _process_pending_video(
     user_id = _user_id(message)
     pending_videos.pop(user_id, None)
 
-    await message.answer("Рекламная плашка принята. Обрабатываю видео...")
+    await message.answer("Начал монтировать видео")
 
     try:
         subtitles_file = await _create_subtitles_file(
@@ -295,14 +319,14 @@ async def _process_pending_video(
             video=FSInputFile(pending.output_path),
             width=WIDTH,
             height=HEIGHT,
-            caption="Готово!",
+            caption="Готово",
         )
-    except VideoProcessingError:
+    except VideoProcessingError as exc:
         logger.exception("Video processing failed for message_id=%s", message.message_id)
-        await message.answer("Не удалось обработать видео. Попробуй другой файл.")
-    except Exception:
+        await message.answer(f"Ошибка: не удалось смонтировать видео. {exc}")
+    except Exception as exc:
         logger.exception("Unexpected error while processing pending video")
-        await message.answer("Произошла ошибка. Попробуй отправить видео еще раз.")
+        await message.answer(f"Ошибка: не удалось смонтировать видео. {exc}")
     finally:
         _cleanup_pending(pending)
         if cleanup_ad_banner and ad_banner_path:
@@ -323,6 +347,15 @@ def _command_payload(text: str) -> str:
 
 def _user_id(message: Message) -> int:
     return message.from_user.id if message.from_user else message.chat.id
+
+
+def _no_content_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=NO_CONTENT_TEXT)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder=NO_CONTENT_TEXT,
+    )
 
 
 if __name__ == "__main__":

@@ -46,7 +46,7 @@ def ensure_ffmpeg_available() -> None:
 async def process_video(
     input_path: Path,
     output_path: Path,
-    ad_text: str = DEFAULT_AD_TEXT,
+    ad_text: str | None = DEFAULT_AD_TEXT,
     ad_banner_path: Path | None = None,
     subtitles_path: Path | None = None,
 ) -> None:
@@ -56,7 +56,8 @@ async def process_video(
     normalized_banner_path = (
         output_path.with_name(f"{output_path.stem}_banner.png") if ad_banner_path else None
     )
-    ad_text_path.write_text(_prepare_ad_text(ad_text), encoding="utf-8")
+    if ad_text is not None:
+        ad_text_path.write_text(_prepare_ad_text(ad_text), encoding="utf-8")
 
     try:
         if ad_banner_path and normalized_banner_path:
@@ -85,7 +86,7 @@ async def process_video(
             )
             if subtitles_path:
                 filter_complex += f";[with_ad]{_ass_subtitles_filter(subtitles_path)}[v]"
-        else:
+        elif ad_text is not None:
             video_filters = [
                 *base_filters,
                 (
@@ -100,6 +101,17 @@ async def process_video(
                     line_spacing=10,
                 ),
             ]
+
+            if subtitles_path:
+                video_filters.append(_ass_subtitles_filter(subtitles_path))
+
+            filter_complex = (
+                f"[0:v]"
+                + ",".join(video_filters)
+                + "[v]"
+            )
+        else:
+            video_filters = list(base_filters)
 
             if subtitles_path:
                 video_filters.append(_ass_subtitles_filter(subtitles_path))
