@@ -10,6 +10,7 @@ WIDTH = 1080
 HEIGHT = 1920
 VIDEO_FORMATS = {
     "9:16": (1080, 1920),
+    "9:16_zoom": (1080, 1920),
     "1:1": (1080, 1080),
     "4:5": (1080, 1350),
     "16:9": (1920, 1080),
@@ -68,12 +69,20 @@ async def process_video(
             await _normalize_banner(ad_banner_path, normalized_banner_path, output_width=output_width)
             ad_banner_path = normalized_banner_path
 
-        base_filters = [
-            f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease",
-            f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2:{fill_color}",
-            "fps=30",
-            "setsar=1",
-        ]
+        if output_format == "9:16_zoom":
+            base_filters = [
+                f"scale={output_width}:{output_height}:force_original_aspect_ratio=increase",
+                f"crop={output_width}:{output_height}:(iw-ow)/2:(ih-oh)/2",
+                "fps=30",
+                "setsar=1",
+            ]
+        else:
+            base_filters = [
+                f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease",
+                f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2:{fill_color}",
+                "fps=30",
+                "setsar=1",
+            ]
         if mirror:
             base_filters.append("hflip")
 
@@ -159,7 +168,7 @@ async def process_video(
                 "-pix_fmt",
                 "yuv420p",
                 "-aspect",
-                output_format,
+                _aspect_ratio(output_format),
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -277,6 +286,13 @@ def _escape_drawtext(text: str) -> str:
         .replace("'", "\\'")
         .replace("%", "\\%")
     )
+
+
+def _aspect_ratio(output_format: str) -> str:
+    if output_format == "9:16_zoom":
+        return "9:16"
+
+    return output_format
 
 
 def _ass_subtitles_filter(subtitles_path: Path) -> str:

@@ -339,7 +339,7 @@ async def handle_settings_callback(callback: CallbackQuery) -> None:
     elif action == "settings:format":
         await _edit_montage_settings(callback.message, pending, _format_keyboard())
     elif action.startswith("settings:format:"):
-        video_format = action.removeprefix("settings:format:").replace("_", ":")
+        video_format = _decode_format_callback(action.removeprefix("settings:format:"))
         if video_format in VIDEO_FORMATS:
             pending.settings.video_format = video_format
         await _edit_montage_settings(callback.message, pending, _montage_settings_keyboard(pending))
@@ -476,6 +476,7 @@ def _format_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="9:16 — Reels / TikTok / Shorts", callback_data="settings:format:9_16")],
+            [InlineKeyboardButton(text="9:16 — с приближением", callback_data="settings:format:9_16_zoom")],
             [InlineKeyboardButton(text="1:1 — квадратный пост", callback_data="settings:format:1_1")],
             [InlineKeyboardButton(text="4:5 — лента Instagram", callback_data="settings:format:4_5")],
             [InlineKeyboardButton(text="16:9 — горизонтальное видео", callback_data="settings:format:16_9")],
@@ -517,11 +518,19 @@ def _subtitle_color_keyboard() -> InlineKeyboardMarkup:
 def _format_label(video_format: str) -> str:
     labels = {
         "9:16": "9:16, без растягивания",
+        "9:16_zoom": "9:16, с приближением",
         "1:1": "1:1, без растягивания",
         "4:5": "4:5, без растягивания",
         "16:9": "16:9, без растягивания",
     }
     return labels.get(video_format, labels[DEFAULT_VIDEO_FORMAT])
+
+
+def _decode_format_callback(value: str) -> str:
+    if value == "9_16_zoom":
+        return "9:16_zoom"
+
+    return value.replace("_", ":")
 
 
 async def _create_subtitles_file(
