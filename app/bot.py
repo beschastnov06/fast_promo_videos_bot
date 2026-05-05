@@ -36,7 +36,7 @@ MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
 TMP_DIR = Path("tmp")
 AD_BANNERS_DIR = TMP_DIR / "ad_banners"
 NO_CONTENT_TEXT = "Без контента"
-MAX_AD_TEXT_CHARS = 120
+MAX_AD_TEXT_CHARS = 60
 
 
 @dataclass

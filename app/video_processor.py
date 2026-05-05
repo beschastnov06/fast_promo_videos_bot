@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import shutil
-import textwrap
 from pathlib import Path
 
 
@@ -20,9 +19,6 @@ SUBTITLE_BOX_HEIGHT = 170
 SUBTITLE_SIDE_SAFE = 160
 SUBTITLE_FONT_SIZE = 48
 SUBTITLE_LINE_SPACING = 10
-MAX_AD_TEXT_CHARS = 120
-MAX_AD_TEXT_LINES = 2
-AD_TEXT_LINE_WIDTH = 28
 MAX_SUBTITLE_CHARS = 160
 MAX_SUBTITLE_LINES = 2
 SUBTITLE_LINE_WIDTH = 30
@@ -52,12 +48,9 @@ async def process_video(
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     process = None
-    ad_text_path = output_path.with_name(f"{output_path.stem}_ad.txt")
     normalized_banner_path = (
         output_path.with_name(f"{output_path.stem}_banner.png") if ad_banner_path else None
     )
-    if ad_text is not None:
-        ad_text_path.write_text(_prepare_ad_text(ad_text), encoding="utf-8")
 
     try:
         if ad_banner_path and normalized_banner_path:
@@ -87,19 +80,10 @@ async def process_video(
             if subtitles_path:
                 filter_complex += f";[with_ad]{_ass_subtitles_filter(subtitles_path)}[v]"
         elif ad_text is not None:
+            ad_text_ass_path = await _prepare_ad_text_ass(ad_text, output_path)
             video_filters = [
                 *base_filters,
-                (
-                    "drawbox="
-                    f"x=0:y={AD_TOP_MARGIN}:"
-                    f"w=iw:h={AD_SLOT_HEIGHT}:color=black@0.55:t=fill"
-                ),
-                _drawtext(
-                    textfile=ad_text_path,
-                    y=str(AD_TOP_MARGIN + 46),
-                    fontsize=54,
-                    line_spacing=10,
-                ),
+                _ass_subtitles_filter(ad_text_ass_path),
             ]
 
             if subtitles_path:
@@ -211,7 +195,8 @@ async def process_video(
 
         logger.info("FFmpeg processing finished: %s", output_path)
     finally:
-        ad_text_path.unlink(missing_ok=True)
+        if ad_text is not None:
+            output_path.with_name(f"{output_path.stem}_ad.ass").unlink(missing_ok=True)
         if normalized_banner_path:
             normalized_banner_path.unlink(missing_ok=True)
 
@@ -255,24 +240,6 @@ async def _normalize_banner(input_path: Path, output_path: Path) -> None:
         raise VideoProcessingError("Failed to prepare ad banner")
 
 
-def _drawtext(
-    textfile: Path,
-    y: str,
-    fontsize: int,
-    line_spacing: int = 0,
-) -> str:
-    return (
-        "drawtext="
-        f"fontfile='{FONT_FILE}':"
-        f"fontcolor=white:"
-        f"fontsize={fontsize}:"
-        f"textfile='{_escape_drawtext(str(textfile))}':"
-        f"line_spacing={line_spacing}:"
-        "x=(w-text_w)/2:"
-        f"y={y}"
-    )
-
-
 def _escape_drawtext(text: str) -> str:
     return (
         text.replace("\\", "\\\\")
@@ -282,18 +249,13 @@ def _escape_drawtext(text: str) -> str:
     )
 
 
-def _prepare_ad_text(text: str) -> str:
-    normalized = " ".join(text.split()) or DEFAULT_AD_TEXT
-    normalized = normalized[:MAX_AD_TEXT_CHARS].strip()
-
-    lines = textwrap.wrap(
-        normalized,
-        width=AD_TEXT_LINE_WIDTH,
-        max_lines=MAX_AD_TEXT_LINES,
-        placeholder="...",
-    )
-    return "\n".join(lines)
-
-
 def _ass_subtitles_filter(subtitles_path: Path) -> str:
     return f"subtitles=filename='{_escape_drawtext(str(subtitles_path))}'"
+
+
+async def _prepare_ad_text_ass(ad_text: str, output_path: Path) -> Path:
+    from app.subtitles import write_ass_ad_text
+
+    ad_text_ass_path = output_path.with_name(f"{output_path.stem}_ad.ass")
+    write_ass_ad_text(ad_text, ad_text_ass_path)
+    return ad_text_ass_path
