@@ -15,7 +15,6 @@ from app.config import Config, load_config
 from app.subtitles import write_ass_subtitles
 from app.transcriber import TranscriptionError, extract_audio, transcribe_audio
 from app.video_processor import (
-    DEFAULT_AD_TEXT,
     FFmpegNotFoundError,
     HEIGHT,
     VideoProcessingError,
@@ -36,7 +35,6 @@ MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
 MAX_BANNER_SIZE_MB = 5
 MAX_BANNER_SIZE_BYTES = MAX_BANNER_SIZE_MB * 1024 * 1024
 TMP_DIR = Path("tmp")
-AD_BANNERS_DIR = TMP_DIR / "ad_banners"
 NO_CONTENT_TEXT = "Без контента"
 MAX_AD_TEXT_CHARS = 60
 
@@ -49,8 +47,6 @@ class PendingVideo:
     output_path: Path
 
 
-user_ad_texts: dict[int, str] = {}
-user_ad_banners: dict[int, Path] = {}
 pending_videos: dict[int, PendingVideo] = {}
 app_config: Config | None = None
 
@@ -70,6 +66,12 @@ async def start(message: Message) -> None:
 
 @dp.message(Command("ad"))
 async def set_ad_text(message: Message) -> None:
+    user_id = _user_id(message)
+    pending = pending_videos.get(user_id)
+    if not pending:
+        await message.answer("Сначала отправь видео, а потом рекламный текст или баннер для него.")
+        return
+
     text = _command_payload(message.text or "")
     if not text:
         await message.answer("Напиши текст после команды, например: /ad Реклама: @example")
@@ -78,35 +80,25 @@ async def set_ad_text(message: Message) -> None:
         await message.answer(f"Ошибка: рекламный текст слишком длинный. Максимум — {MAX_AD_TEXT_CHARS} символов.")
         return
 
-    user_id = _user_id(message)
-    pending = pending_videos.get(user_id)
-    if pending:
-        await message.answer("Рекламный контент обрабатывается", reply_markup=ReplyKeyboardRemove())
-        await message.answer("Рекламный контент обработан")
-        await _process_pending_video(
-            message=message,
-            pending=pending,
-            ad_text=text,
-        )
-        return
-
-    user_ad_texts[user_id] = text
-    user_ad_banners.pop(user_id, None)
-    await message.answer("Верхняя текстовая рекламная плашка сохранена.")
+    await message.answer("Рекламный контент обрабатывается", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Рекламный контент обработан")
+    await _process_pending_video(
+        message=message,
+        pending=pending,
+        ad_text=text,
+    )
 
 
 @dp.message(Command("clear_ad"))
 async def clear_ad(message: Message) -> None:
     user_id = _user_id(message)
-    banner_path = user_ad_banners.pop(user_id, None)
-    if banner_path:
-        banner_path.unlink(missing_ok=True)
-    user_ad_texts.pop(user_id, None)
     pending = pending_videos.pop(user_id, None)
     if pending:
         _cleanup_pending(pending)
+        await message.answer("Текущая обработка отменена.", reply_markup=ReplyKeyboardRemove())
+        return
 
-    await message.answer(f"Верхняя рекламная плашка сброшена. Будет использоваться: {DEFAULT_AD_TEXT}")
+    await message.answer("Нет активного видео для отмены.")
 
 
 @dp.message(F.photo)
@@ -154,11 +146,11 @@ async def _handle_ad_banner_file(
 
     user_id = _user_id(message)
     pending = pending_videos.get(user_id)
-    banner_path = (
-        pending.input_path.with_name(f"{pending.input_path.stem}_banner{suffix}")
-        if pending
-        else AD_BANNERS_DIR / f"{user_id}{suffix}"
-    )
+    if not pending:
+        await message.answer("Сначала отправь видео, а потом рекламный текст или баннер для него.")
+        return
+
+    banner_path = pending.input_path.with_name(f"{pending.input_path.stem}_banner{suffix}")
 
     telegram_file = await bot.get_file(file_id)
     if not telegram_file.file_path:
@@ -168,20 +160,13 @@ async def _handle_ad_banner_file(
     await message.answer("Рекламный контент обрабатывается", reply_markup=ReplyKeyboardRemove())
     await bot.download_file(telegram_file.file_path, destination=banner_path)
 
-    if pending:
-        await message.answer("Рекламный контент обработан")
-        await _process_pending_video(
-            message=message,
-            pending=pending,
-            ad_banner_path=banner_path,
-            cleanup_ad_banner=True,
-        )
-        return
-
-    user_ad_banners[user_id] = banner_path
-    user_ad_texts.pop(user_id, None)
-
-    await message.answer("Баннер сохранен как верхняя рекламная плашка.")
+    await message.answer("Рекламный контент обработан")
+    await _process_pending_video(
+        message=message,
+        pending=pending,
+        ad_banner_path=banner_path,
+        cleanup_ad_banner=True,
+    )
 
 
 @dp.message(F.video)
@@ -288,7 +273,6 @@ async def main() -> None:
         raise
 
     TMP_DIR.mkdir(parents=True, exist_ok=True)
-    AD_BANNERS_DIR.mkdir(parents=True, exist_ok=True)
 
     session = _create_session(config)
     bot = Bot(token=config.bot_token, session=session) if session else Bot(token=config.bot_token)
@@ -337,7 +321,7 @@ async def _create_subtitles_file(
 async def _process_pending_video(
     message: Message,
     pending: PendingVideo,
-    ad_text: str = DEFAULT_AD_TEXT,
+    ad_text: str | None = None,
     ad_banner_path: Path | None = None,
     cleanup_ad_banner: bool = False,
 ) -> None:
