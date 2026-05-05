@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 MAX_VIDEO_SIZE_MB = 20
 MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
+MAX_BANNER_SIZE_MB = 5
+MAX_BANNER_SIZE_BYTES = MAX_BANNER_SIZE_MB * 1024 * 1024
 TMP_DIR = Path("tmp")
 AD_BANNERS_DIR = TMP_DIR / "ad_banners"
 NO_CONTENT_TEXT = "Без контента"
@@ -109,12 +111,56 @@ async def clear_ad(message: Message) -> None:
 
 @dp.message(F.photo)
 async def set_ad_banner(message: Message, bot: Bot) -> None:
+    photo = message.photo[-1]
+    await _handle_ad_banner_file(
+        message=message,
+        bot=bot,
+        file_id=photo.file_id,
+        suffix=".jpg",
+        file_size=photo.file_size,
+    )
+
+
+@dp.message(F.document)
+async def set_ad_banner_document(message: Message, bot: Bot) -> None:
+    document = message.document
+    if not document:
+        await handle_other(message)
+        return
+
+    if not _is_image_document(document.mime_type, document.file_name):
+        await handle_other(message)
+        return
+
+    await _handle_ad_banner_file(
+        message=message,
+        bot=bot,
+        file_id=document.file_id,
+        suffix=_image_suffix(document.mime_type, document.file_name),
+        file_size=document.file_size,
+    )
+
+
+async def _handle_ad_banner_file(
+    message: Message,
+    bot: Bot,
+    file_id: str,
+    suffix: str,
+    file_size: int | None,
+) -> None:
+    if file_size and file_size > MAX_BANNER_SIZE_BYTES:
+        await message.answer(f"Ошибка: баннер слишком большой. Максимум — {MAX_BANNER_SIZE_MB} МБ.")
+        return
+
     user_id = _user_id(message)
     pending = pending_videos.get(user_id)
-    banner_path = pending.input_path.with_name(f"{pending.input_path.stem}_banner.jpg") if pending else AD_BANNERS_DIR / f"{user_id}.jpg"
+    banner_path = (
+        pending.input_path.with_name(f"{pending.input_path.stem}_banner{suffix}")
+        if pending
+        else AD_BANNERS_DIR / f"{user_id}{suffix}"
+    )
 
-    photo = message.photo[-1]
-    telegram_file = await bot.get_file(photo.file_id)
+    telegram_file = await bot.get_file(file_id)
     if not telegram_file.file_path:
         await message.answer("Ошибка: не удалось скачать баннер. Попробуй другую картинку.")
         return
@@ -343,6 +389,27 @@ def _cleanup_pending(pending: PendingVideo) -> None:
 def _command_payload(text: str) -> str:
     parts = text.split(maxsplit=1)
     return parts[1].strip() if len(parts) > 1 else ""
+
+
+def _is_image_document(mime_type: str | None, file_name: str | None) -> bool:
+    if mime_type and mime_type.startswith("image/"):
+        return True
+
+    suffix = Path(file_name or "").suffix.casefold()
+    return suffix in {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def _image_suffix(mime_type: str | None, file_name: str | None) -> str:
+    suffix = Path(file_name or "").suffix.casefold()
+    if suffix in {".jpg", ".jpeg", ".png", ".webp"}:
+        return suffix
+
+    if mime_type == "image/png":
+        return ".png"
+    if mime_type == "image/webp":
+        return ".webp"
+
+    return ".jpg"
 
 
 def _user_id(message: Message) -> int:

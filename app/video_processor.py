@@ -210,8 +210,9 @@ async def _normalize_banner(input_path: Path, output_path: Path) -> None:
         str(input_path),
         "-vf",
         (
+            "format=rgba,"
             f"scale={WIDTH}:{AD_SLOT_HEIGHT}:force_original_aspect_ratio=decrease,"
-            f"pad={WIDTH}:{AD_SLOT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:white,"
+            f"pad={WIDTH}:{AD_SLOT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black@0,"
             "format=rgba"
         ),
         "-frames:v",
