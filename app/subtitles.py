@@ -59,7 +59,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def _build_ad_ass(text: str) -> str:
-    margin_v = HEIGHT - AD_TOP_MARGIN - AD_SLOT_HEIGHT + 42
+    margin_v = AD_TOP_MARGIN + 42
     text = _escape_ass(_wrap_ad_text(text))
 
     return f"""[Script Info]
