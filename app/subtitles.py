@@ -19,17 +19,22 @@ AD_MAX_LINES = 2
 AD_LINE_WIDTH = 28
 
 
-def write_ass_subtitles(segments: list[SubtitleSegment], output_path: Path) -> None:
-    output_path.write_text(_build_ass(segments), encoding="utf-8")
+def write_ass_subtitles(
+    segments: list[SubtitleSegment],
+    output_path: Path,
+    font_name: str = "DejaVu Sans",
+) -> None:
+    output_path.write_text(_build_ass(segments, font_name=font_name), encoding="utf-8")
 
 
 def write_ass_ad_text(text: str, output_path: Path) -> None:
     output_path.write_text(_build_ad_ass(text), encoding="utf-8")
 
 
-def _build_ass(segments: list[SubtitleSegment]) -> str:
+def _build_ass(segments: list[SubtitleSegment], font_name: str) -> str:
     margin_v = BOTTOM_SAFE
     margin_lr = LEFT_RIGHT_SAFE
+    font_name = _escape_ass(font_name)
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -40,7 +45,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,DejaVu Sans,{FONT_SIZE},&H00FFFFFF,&H000000FF,&HAA000000,&HAA000000,1,0,0,0,100,100,0,0,3,0,0,2,{margin_lr},{margin_lr},{margin_v},1
+Style: Default,{font_name},{FONT_SIZE},&H00FFFFFF,&H000000FF,&HAA000000,&HAA000000,1,0,0,0,100,100,0,0,3,0,0,2,{margin_lr},{margin_lr},{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

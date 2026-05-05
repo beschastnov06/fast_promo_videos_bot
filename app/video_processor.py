@@ -8,6 +8,12 @@ logger = logging.getLogger(__name__)
 
 WIDTH = 1080
 HEIGHT = 1920
+VIDEO_FORMATS = {
+    "9:16": (1080, 1920),
+    "1:1": (1080, 1080),
+    "4:5": (1080, 1350),
+    "16:9": (1920, 1080),
+}
 PROCESS_TIMEOUT_SECONDS = 300
 FONT_FILE = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
@@ -45,24 +51,30 @@ async def process_video(
     ad_text: str | None = DEFAULT_AD_TEXT,
     ad_banner_path: Path | None = None,
     subtitles_path: Path | None = None,
+    output_format: str = "9:16",
+    fill_color: str = "black",
+    mirror: bool = False,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     process = None
+    output_width, output_height = VIDEO_FORMATS.get(output_format, (WIDTH, HEIGHT))
     normalized_banner_path = (
         output_path.with_name(f"{output_path.stem}_banner.png") if ad_banner_path else None
     )
 
     try:
         if ad_banner_path and normalized_banner_path:
-            await _normalize_banner(ad_banner_path, normalized_banner_path)
+            await _normalize_banner(ad_banner_path, normalized_banner_path, output_width=output_width)
             ad_banner_path = normalized_banner_path
 
         base_filters = [
-            f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease",
-            f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:black",
+            f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease",
+            f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2:{fill_color}",
             "fps=30",
             "setsar=1",
         ]
+        if mirror:
+            base_filters.append("hflip")
 
         if ad_banner_path:
             final_ad_label = "with_ad" if subtitles_path else "v"
@@ -146,7 +158,7 @@ async def process_video(
                 "-pix_fmt",
                 "yuv420p",
                 "-aspect",
-                "9:16",
+                output_format,
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -201,7 +213,7 @@ async def process_video(
             normalized_banner_path.unlink(missing_ok=True)
 
 
-async def _normalize_banner(input_path: Path, output_path: Path) -> None:
+async def _normalize_banner(input_path: Path, output_path: Path, output_width: int = WIDTH) -> None:
     cmd = [
         "ffmpeg",
         "-y",
@@ -211,8 +223,8 @@ async def _normalize_banner(input_path: Path, output_path: Path) -> None:
         "-vf",
         (
             "format=rgba,"
-            f"scale={WIDTH}:{AD_SLOT_HEIGHT}:force_original_aspect_ratio=decrease,"
-            f"pad={WIDTH}:{AD_SLOT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black@0,"
+            f"scale={output_width}:{AD_SLOT_HEIGHT}:force_original_aspect_ratio=decrease,"
+            f"pad={output_width}:{AD_SLOT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black@0,"
             "format=rgba"
         ),
         "-frames:v",
