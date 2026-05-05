@@ -3,8 +3,9 @@ from dataclasses import dataclass
 import logging
 import uuid
 from pathlib import Path
+from typing import Any, Awaitable, Callable
 
-from aiogram import Bot, Dispatcher, F
+from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.filters import Command
@@ -52,6 +53,23 @@ app_config: Config | None = None
 
 
 dp = Dispatcher()
+
+
+class UsernameWhitelistMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[Message, dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: dict[str, Any],
+    ) -> Any:
+        if _is_allowed_user(event):
+            return await handler(event, data)
+
+        await event.answer("на этапе разработки")
+        return None
+
+
+dp.message.outer_middleware(UsernameWhitelistMiddleware())
 
 
 @dp.message(CommandStart())
@@ -394,6 +412,17 @@ def _image_suffix(mime_type: str | None, file_name: str | None) -> str:
         return ".webp"
 
     return ".jpg"
+
+
+def _is_allowed_user(message: Message) -> bool:
+    if app_config is None:
+        return False
+
+    username = message.from_user.username if message.from_user else None
+    if not username:
+        return False
+
+    return username.casefold() in app_config.allowed_telegram_usernames
 
 
 def _user_id(message: Message) -> int:
