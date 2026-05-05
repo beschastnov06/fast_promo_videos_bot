@@ -54,6 +54,7 @@ async def process_video(
     output_format: str = "9:16",
     fill_color: str = "black",
     mirror: bool = False,
+    strip_metadata: bool = True,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     process = None
@@ -141,10 +142,6 @@ async def process_video(
                 "[v]",
                 "-map",
                 "0:a?",
-                "-map_metadata",
-                "-1",
-                "-map_chapters",
-                "-1",
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -171,13 +168,25 @@ async def process_video(
                 "44100",
                 "-movflags",
                 "+faststart",
-                "-metadata",
-                "encoder=",
-                "-metadata",
-                "comment=",
                 str(output_path),
             ]
         )
+
+        if strip_metadata:
+            output_arg = cmd.pop()
+            cmd.extend(
+                [
+                    "-map_metadata",
+                    "-1",
+                    "-map_chapters",
+                    "-1",
+                    "-metadata",
+                    "encoder=",
+                    "-metadata",
+                    "comment=",
+                    output_arg,
+                ]
+            )
 
         logger.info("Starting FFmpeg processing: input=%s output=%s", input_path, output_path)
         logger.debug("FFmpeg command: %s", " ".join(cmd))

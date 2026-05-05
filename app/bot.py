@@ -52,6 +52,7 @@ DEFAULT_VIDEO_FORMAT = "9:16"
 DEFAULT_FILL_COLOR = "black"
 DEFAULT_SUBTITLE_FONT = "DejaVu Sans"
 DEFAULT_SUBTITLE_COLOR = "white"
+DEFAULT_STRIP_METADATA = True
 FILL_COLORS = {
     "black": "черное",
     "white": "белое",
@@ -75,6 +76,7 @@ class MontageSettings:
     subtitle_font: str = DEFAULT_SUBTITLE_FONT
     subtitle_color: str = DEFAULT_SUBTITLE_COLOR
     mirror: bool = False
+    strip_metadata: bool = DEFAULT_STRIP_METADATA
 
 
 @dataclass
@@ -365,6 +367,9 @@ async def handle_settings_callback(callback: CallbackQuery) -> None:
     elif action == "settings:mirror":
         pending.settings.mirror = not pending.settings.mirror
         await _edit_montage_settings(callback.message, pending, _montage_settings_keyboard(pending))
+    elif action == "settings:metadata":
+        pending.settings.strip_metadata = not pending.settings.strip_metadata
+        await _edit_montage_settings(callback.message, pending, _montage_settings_keyboard(pending))
     elif action == "settings:render":
         await callback.answer()
         await callback.message.edit_reply_markup(reply_markup=None)
@@ -445,13 +450,15 @@ def _montage_settings_text(pending: PendingVideo) -> str:
         f"Заполнение пустоты: {FILL_COLORS[settings.fill_color]}\n"
         f"Шрифт субтитров: {settings.subtitle_font}\n"
         f"Цвет субтитров: {SUBTITLE_COLORS[settings.subtitle_color]}\n"
-        f"Зеркальность видео: {'да' if settings.mirror else 'нет'}\n\n"
+        f"Зеркальность видео: {'да' if settings.mirror else 'нет'}\n"
+        f"Удаление метаданных: {'да' if settings.strip_metadata else 'нет'}\n\n"
         "Если все подходит, нажмите \"Отправить в монтаж\""
     )
 
 
 def _montage_settings_keyboard(pending: PendingVideo) -> InlineKeyboardMarkup:
     mirror_text = "Выключить зеркальность" if pending.settings.mirror else "Включить зеркальность"
+    metadata_text = "Оставить метаданные" if pending.settings.strip_metadata else "Удалить метаданные"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Изменить формат", callback_data="settings:format")],
@@ -459,6 +466,7 @@ def _montage_settings_keyboard(pending: PendingVideo) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Изменить шрифт субтитров", callback_data="settings:font")],
             [InlineKeyboardButton(text="Изменить цвет субтитров", callback_data="settings:subtitle_color")],
             [InlineKeyboardButton(text=mirror_text, callback_data="settings:mirror")],
+            [InlineKeyboardButton(text=metadata_text, callback_data="settings:metadata")],
             [InlineKeyboardButton(text="✅ Отправить в монтаж", callback_data="settings:render")],
         ]
     )
@@ -577,6 +585,7 @@ async def _process_pending_video(
             output_format=pending.settings.video_format,
             fill_color=pending.settings.fill_color,
             mirror=pending.settings.mirror,
+            strip_metadata=pending.settings.strip_metadata,
         )
 
         output_width, output_height = VIDEO_FORMATS.get(pending.settings.video_format, (WIDTH, HEIGHT))
