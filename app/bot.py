@@ -51,9 +51,14 @@ MAX_AD_TEXT_CHARS = 60
 DEFAULT_VIDEO_FORMAT = "9:16"
 DEFAULT_FILL_COLOR = "black"
 DEFAULT_SUBTITLE_FONT = "DejaVu Sans"
+DEFAULT_SUBTITLE_COLOR = "white"
 FILL_COLORS = {
     "black": "черное",
     "white": "белое",
+}
+SUBTITLE_COLORS = {
+    "white": "белый",
+    "black": "черный",
 }
 SUBTITLE_FONTS = {
     "DejaVu Sans": "DejaVu Sans",
@@ -68,6 +73,7 @@ class MontageSettings:
     video_format: str = DEFAULT_VIDEO_FORMAT
     fill_color: str = DEFAULT_FILL_COLOR
     subtitle_font: str = DEFAULT_SUBTITLE_FONT
+    subtitle_color: str = DEFAULT_SUBTITLE_COLOR
     mirror: bool = False
 
 
@@ -349,6 +355,13 @@ async def handle_settings_callback(callback: CallbackQuery) -> None:
         if subtitle_font in SUBTITLE_FONTS:
             pending.settings.subtitle_font = subtitle_font
         await _edit_montage_settings(callback.message, pending, _montage_settings_keyboard(pending))
+    elif action == "settings:subtitle_color":
+        await _edit_montage_settings(callback.message, pending, _subtitle_color_keyboard())
+    elif action.startswith("settings:subtitle_color:"):
+        subtitle_color = action.removeprefix("settings:subtitle_color:")
+        if subtitle_color in SUBTITLE_COLORS:
+            pending.settings.subtitle_color = subtitle_color
+        await _edit_montage_settings(callback.message, pending, _montage_settings_keyboard(pending))
     elif action == "settings:mirror":
         pending.settings.mirror = not pending.settings.mirror
         await _edit_montage_settings(callback.message, pending, _montage_settings_keyboard(pending))
@@ -431,6 +444,7 @@ def _montage_settings_text(pending: PendingVideo) -> str:
         f"Формат: {_format_label(settings.video_format)}\n"
         f"Заполнение пустоты: {FILL_COLORS[settings.fill_color]}\n"
         f"Шрифт субтитров: {settings.subtitle_font}\n"
+        f"Цвет субтитров: {SUBTITLE_COLORS[settings.subtitle_color]}\n"
         f"Зеркальность видео: {'да' if settings.mirror else 'нет'}\n\n"
         "Если все подходит, нажмите \"Отправить в монтаж\""
     )
@@ -443,6 +457,7 @@ def _montage_settings_keyboard(pending: PendingVideo) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Изменить формат", callback_data="settings:format")],
             [InlineKeyboardButton(text="Изменить цвет заполнения", callback_data="settings:fill")],
             [InlineKeyboardButton(text="Изменить шрифт субтитров", callback_data="settings:font")],
+            [InlineKeyboardButton(text="Изменить цвет субтитров", callback_data="settings:subtitle_color")],
             [InlineKeyboardButton(text=mirror_text, callback_data="settings:mirror")],
             [InlineKeyboardButton(text="✅ Отправить в монтаж", callback_data="settings:render")],
         ]
@@ -481,6 +496,16 @@ def _subtitle_font_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def _subtitle_color_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Белый", callback_data="settings:subtitle_color:white")],
+            [InlineKeyboardButton(text="Черный", callback_data="settings:subtitle_color:black")],
+            [InlineKeyboardButton(text="Назад", callback_data="settings:main")],
+        ]
+    )
+
+
 def _format_label(video_format: str) -> str:
     labels = {
         "9:16": "9:16, без растягивания",
@@ -496,6 +521,7 @@ async def _create_subtitles_file(
     audio_path: Path,
     subtitles_path: Path,
     subtitle_font: str = DEFAULT_SUBTITLE_FONT,
+    subtitle_color: str = DEFAULT_SUBTITLE_COLOR,
 ) -> Path | None:
     if not app_config or not app_config.openai_api_key:
         logger.warning("OPENAI_API_KEY is not set. Video will be processed without subtitles.")
@@ -515,7 +541,12 @@ async def _create_subtitles_file(
         logger.info("Transcription returned no subtitle segments")
         return None
 
-    write_ass_subtitles(segments=segments, output_path=subtitles_path, font_name=subtitle_font)
+    write_ass_subtitles(
+        segments=segments,
+        output_path=subtitles_path,
+        font_name=subtitle_font,
+        font_color=subtitle_color,
+    )
     return subtitles_path
 
 
@@ -534,6 +565,7 @@ async def _process_pending_video(
             audio_path=pending.audio_path,
             subtitles_path=pending.subtitles_path,
             subtitle_font=pending.settings.subtitle_font,
+            subtitle_color=pending.settings.subtitle_color,
         )
 
         await process_video(

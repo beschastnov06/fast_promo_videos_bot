@@ -23,18 +23,20 @@ def write_ass_subtitles(
     segments: list[SubtitleSegment],
     output_path: Path,
     font_name: str = "DejaVu Sans",
+    font_color: str = "white",
 ) -> None:
-    output_path.write_text(_build_ass(segments, font_name=font_name), encoding="utf-8")
+    output_path.write_text(_build_ass(segments, font_name=font_name, font_color=font_color), encoding="utf-8")
 
 
 def write_ass_ad_text(text: str, output_path: Path) -> None:
     output_path.write_text(_build_ad_ass(text), encoding="utf-8")
 
 
-def _build_ass(segments: list[SubtitleSegment], font_name: str) -> str:
+def _build_ass(segments: list[SubtitleSegment], font_name: str, font_color: str) -> str:
     margin_v = BOTTOM_SAFE
     margin_lr = LEFT_RIGHT_SAFE
     font_name = _escape_ass(font_name)
+    primary_color, secondary_color, outline_color, back_color = _subtitle_colors(font_color)
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -45,7 +47,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_name},{FONT_SIZE},&H00FFFFFF,&H000000FF,&HAA000000,&HAA000000,1,0,0,0,100,100,0,0,3,0,0,2,{margin_lr},{margin_lr},{margin_v},1
+Style: Default,{font_name},{FONT_SIZE},{primary_color},{secondary_color},{outline_color},{back_color},1,0,0,0,100,100,0,0,3,0,0,2,{margin_lr},{margin_lr},{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -120,3 +122,10 @@ def _format_time(seconds: float) -> str:
 
 def _escape_ass(text: str) -> str:
     return text.replace("{", "\\{").replace("}", "\\}")
+
+
+def _subtitle_colors(font_color: str) -> tuple[str, str, str, str]:
+    if font_color == "black":
+        return "&H00000000", "&H000000FF", "&HAAFFFFFF", "&HAAFFFFFF"
+
+    return "&H00FFFFFF", "&H000000FF", "&HAA000000", "&HAA000000"
