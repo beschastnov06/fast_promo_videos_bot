@@ -10,11 +10,10 @@ WIDTH = 1080
 HEIGHT = 1920
 VIDEO_FORMATS = {
     "9:16": (1080, 1920),
-    "9:16_zoom": (1080, 1920),
-    "1:1": (1080, 1080),
-    "4:5": (1080, 1350),
-    "16:9": (1920, 1080),
+    "9:16_soft_zoom": (1080, 1920),
+    "9:16_cover": (1080, 1920),
 }
+SOFT_ZOOM_FACTOR = 1.12
 PROCESS_TIMEOUT_SECONDS = 300
 FONT_FILE = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
@@ -69,10 +68,19 @@ async def process_video(
             await _normalize_banner(ad_banner_path, normalized_banner_path, output_width=output_width)
             ad_banner_path = normalized_banner_path
 
-        if output_format == "9:16_zoom":
+        if output_format == "9:16_cover":
             base_filters = [
                 f"scale={output_width}:{output_height}:force_original_aspect_ratio=increase",
                 f"crop={output_width}:{output_height}:(iw-ow)/2:(ih-oh)/2",
+                "fps=30",
+                "setsar=1",
+            ]
+        elif output_format == "9:16_soft_zoom":
+            base_filters = [
+                f"scale={output_width}:{output_height}:force_original_aspect_ratio=decrease",
+                f"scale=trunc(iw*{SOFT_ZOOM_FACTOR}/2)*2:trunc(ih*{SOFT_ZOOM_FACTOR}/2)*2",
+                f"crop=min(iw\\,{output_width}):min(ih\\,{output_height}):(iw-ow)/2:(ih-oh)/2",
+                f"pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2:{fill_color}",
                 "fps=30",
                 "setsar=1",
             ]
@@ -289,7 +297,7 @@ def _escape_drawtext(text: str) -> str:
 
 
 def _aspect_ratio(output_format: str) -> str:
-    if output_format == "9:16_zoom":
+    if output_format in {"9:16_soft_zoom", "9:16_cover"}:
         return "9:16"
 
     return output_format

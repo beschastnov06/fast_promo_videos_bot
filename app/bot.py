@@ -475,11 +475,9 @@ def _montage_settings_keyboard(pending: PendingVideo) -> InlineKeyboardMarkup:
 def _format_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="9:16 — Reels / TikTok / Shorts", callback_data="settings:format:9_16")],
-            [InlineKeyboardButton(text="9:16 — с приближением", callback_data="settings:format:9_16_zoom")],
-            [InlineKeyboardButton(text="1:1 — квадратный пост", callback_data="settings:format:1_1")],
-            [InlineKeyboardButton(text="4:5 — лента Instagram", callback_data="settings:format:4_5")],
-            [InlineKeyboardButton(text="16:9 — горизонтальное видео", callback_data="settings:format:16_9")],
+            [InlineKeyboardButton(text="9:16 — без растягивания", callback_data="settings:format:9_16")],
+            [InlineKeyboardButton(text="9:16 — с небольшим приближением", callback_data="settings:format:9_16_soft_zoom")],
+            [InlineKeyboardButton(text="9:16 — растянутый, без полей", callback_data="settings:format:9_16_cover")],
             [InlineKeyboardButton(text="Назад", callback_data="settings:main")],
         ]
     )
@@ -518,17 +516,17 @@ def _subtitle_color_keyboard() -> InlineKeyboardMarkup:
 def _format_label(video_format: str) -> str:
     labels = {
         "9:16": "9:16, без растягивания",
-        "9:16_zoom": "9:16, с приближением",
-        "1:1": "1:1, без растягивания",
-        "4:5": "4:5, без растягивания",
-        "16:9": "16:9, без растягивания",
+        "9:16_soft_zoom": "9:16, с небольшим приближением",
+        "9:16_cover": "9:16, растянутый, без полей",
     }
     return labels.get(video_format, labels[DEFAULT_VIDEO_FORMAT])
 
 
 def _decode_format_callback(value: str) -> str:
-    if value == "9_16_zoom":
-        return "9:16_zoom"
+    if value == "9_16_soft_zoom":
+        return "9:16_soft_zoom"
+    if value == "9_16_cover":
+        return "9:16_cover"
 
     return value.replace("_", ":")
 
