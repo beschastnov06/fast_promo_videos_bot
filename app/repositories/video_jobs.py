@@ -62,3 +62,7 @@ async def mark_failed(session: AsyncSession, job: VideoJob, error_message: str) 
     job.status = "failed"
     job.finished_at = datetime.now(UTC)
     job.error_message = error_message
+
+
+async def mark_refunded(session: AsyncSession, job: VideoJob) -> None:
+    job.credits_charged = 0

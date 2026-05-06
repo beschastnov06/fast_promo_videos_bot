@@ -23,6 +23,7 @@ from app.config import Config, load_config
 from app.db import create_engine, create_session_factory
 from app.models import VideoJobSettings
 from app.queue import enqueue_render_job
+from app.repositories.credits import InsufficientCreditsError, add_credits, charge_credits, get_balance
 from app.repositories.users import get_or_create_user
 from app.repositories.video_jobs import create_draft_job, get_job, mark_queued
 from app.video_processor import (
@@ -45,7 +46,10 @@ MAX_BANNER_SIZE_MB = 5
 MAX_BANNER_SIZE_BYTES = MAX_BANNER_SIZE_MB * 1024 * 1024
 TMP_DIR = Path("tmp")
 NO_CONTENT_TEXT = "Без контента"
+NEW_VIDEO_CALLBACK = "flow:new_video"
 MAX_AD_TEXT_CHARS = 60
+INTRO_BONUS_VIDEOS = 3
+RENDER_COST_VIDEOS = 1
 DEFAULT_VIDEO_FORMAT = "9:16"
 DEFAULT_FILL_COLOR = "black"
 DEFAULT_SUBTITLE_FONT = "DejaVu Sans"
@@ -73,6 +77,12 @@ VIDEO_SPEEDS = {
     1.50: "1.50x",
     2.00: "2.00x",
 }
+TARIFF_PACKAGES = (
+    ("10 видео", "99 ₽", None),
+    ("25 видео", "229 ₽", "скидка 7%"),
+    ("50 видео", "399 ₽", "скидка 19%"),
+    ("100 видео", "699 ₽", "скидка 29%"),
+)
 
 
 @dataclass
@@ -128,12 +138,23 @@ dp.message.outer_middleware(UsernameWhitelistMiddleware())
 
 @dp.message(CommandStart())
 async def start(message: Message) -> None:
+    bonus_granted = await _ensure_intro_bonus(message)
+    await message.answer(_welcome_text())
     await message.answer(
-        f"Отправьте видео до {MAX_VIDEO_SIZE_MB} МБ, "
-        "а я сделаю вертикальный ролик 1080x1920. "
-        "После отправки видео я попрошу рекламный текст или баннер для верхней части макета, "
-        "а субтитры снизу сделаю автоматически из аудио в видео."
+        _how_it_works_text(bonus_granted=bonus_granted),
+        reply_markup=ReplyKeyboardRemove(),
     )
+
+
+@dp.message(Command("balance"))
+async def balance(message: Message) -> None:
+    balance_value = await _user_video_balance(message)
+    await message.answer(f"На вашем счете: {balance_value} видео")
+
+
+@dp.message(Command("buy"))
+async def buy(message: Message) -> None:
+    await message.answer(_tariffs_text())
 
 
 @dp.message(Command("ad"))
@@ -334,6 +355,17 @@ async def handle_no_content_callback(callback: CallbackQuery) -> None:
     pending.ad_banner_name = None
     pending.ready_for_montage = True
     await _send_montage_settings(callback.message, pending)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == NEW_VIDEO_CALLBACK)
+async def handle_new_video_callback(callback: CallbackQuery) -> None:
+    if not _is_allowed_callback(callback):
+        await callback.answer("на этапе разработки", show_alert=True)
+        return
+
+    if callback.message:
+        await callback.message.answer(f"Отправьте видео до {MAX_VIDEO_SIZE_MB} МБ для нового монтажа")
     await callback.answer()
 
 
@@ -610,6 +642,13 @@ async def _process_pending_video(
     try:
         await _persist_and_enqueue_pending(pending)
         await message.answer("Видео поставлено в очередь на монтаж")
+    except InsufficientCreditsError:
+        pending_videos[user_id] = pending
+        await message.answer(
+            "Недостаточно видео на счете.\n\n"
+            "Пополните баланс, чтобы отправить ролик в монтаж.\n\n"
+            f"{_tariffs_text()}"
+        )
     except Exception as exc:
         logger.exception("Failed to enqueue render job: job_id=%s", pending.job_id)
         await message.answer(f"Ошибка: не удалось поставить видео в очередь. {exc}")
@@ -649,6 +688,14 @@ async def _persist_and_enqueue_pending(pending: PendingVideo) -> None:
             if job is None:
                 raise VideoProcessingError("Video job was not found")
 
+            await charge_credits(
+                session,
+                user_id=job.user_id,
+                amount=RENDER_COST_VIDEOS,
+                reason="render_started",
+                source="bot",
+                related_job_id=job.id,
+            )
             job.ad_content_type = _ad_content_type(pending)
             job.ad_text = pending.ad_text
             job.ad_banner_file_id = pending.ad_banner_file_id
@@ -659,7 +706,7 @@ async def _persist_and_enqueue_pending(pending: PendingVideo) -> None:
                 job.settings = VideoJobSettings(job_id=job.id)
 
             _copy_pending_settings(pending, job.settings)
-            await mark_queued(session, job, credits_charged=0)
+            await mark_queued(session, job, credits_charged=RENDER_COST_VIDEOS)
 
     await enqueue_render_job(_app_config(), str(pending.job_id))
 
@@ -709,6 +756,82 @@ def _db_session_factory() -> async_sessionmaker[AsyncSession]:
         raise RuntimeError("Database session factory is not initialized")
 
     return db_session_factory
+
+
+async def _ensure_intro_bonus(message: Message) -> bool:
+    session_factory = _db_session_factory()
+    telegram_user = message.from_user
+    async with session_factory() as session:
+        async with session.begin():
+            user = await get_or_create_user(
+                session,
+                telegram_user_id=_user_id(message),
+                telegram_username=telegram_user.username if telegram_user else None,
+                first_name=telegram_user.first_name if telegram_user else None,
+                last_name=telegram_user.last_name if telegram_user else None,
+            )
+            if user.intro_bonus_granted:
+                return False
+
+            await add_credits(
+                session,
+                user_id=user.id,
+                amount=INTRO_BONUS_VIDEOS,
+                reason="intro_bonus",
+                source="bot",
+            )
+            user.intro_bonus_granted = True
+            return True
+
+
+async def _user_video_balance(message: Message) -> int:
+    session_factory = _db_session_factory()
+    telegram_user = message.from_user
+    async with session_factory() as session:
+        async with session.begin():
+            user = await get_or_create_user(
+                session,
+                telegram_user_id=_user_id(message),
+                telegram_username=telegram_user.username if telegram_user else None,
+                first_name=telegram_user.first_name if telegram_user else None,
+                last_name=telegram_user.last_name if telegram_user else None,
+            )
+            return await get_balance(session, user_id=user.id)
+
+
+def _welcome_text() -> str:
+    return (
+        "Бот помогает быстро готовить рекламные видео-нарезки для вертикальных форматов.\n\n"
+        "Отправьте видео, добавьте рекламный текст или баннер, а бот автоматически соберет ролик "
+        "1080x1920, адаптирует формат, добавит рекламный блок и субтитры из речи."
+    )
+
+
+def _how_it_works_text(*, bonus_granted: bool) -> str:
+    bonus_text = (
+        f"\n\n🎁 Начислили вам {INTRO_BONUS_VIDEOS} подарочных видео 🎁"
+        if bonus_granted
+        else ""
+    )
+    return (
+        "Краткая информация о работе c ботом:\n"
+        f"1. 🎞 Отправляете видео (до {MAX_VIDEO_SIZE_MB} МБ), которое необходимо смонтировать\n"
+        "2. 📌 Если необходимо, отправляете рекламный контент (текст или баннер)\n"
+        "3. ⚙️ Выбираете настройки для монтажа\n"
+        "4. ✅ Получаете готовое видео ✅"
+        f"{bonus_text}"
+    )
+
+
+def _tariffs_text() -> str:
+    lines = ["Стоимость:"]
+    for title, price, discount in TARIFF_PACKAGES:
+        line = f"🔹 {title} — {price}"
+        if discount:
+            line += f" · {discount}"
+        lines.append(line)
+
+    return "\n".join(lines)
 
 
 def _command_payload(text: str) -> str:

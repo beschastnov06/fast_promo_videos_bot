@@ -65,6 +65,19 @@ async def add_credits(
     )
 
 
+async def get_balance(session: AsyncSession, *, user_id: uuid.UUID) -> int:
+    result = await session.execute(
+        select(CreditAccount).where(CreditAccount.user_id == user_id)
+    )
+    account = result.scalar_one_or_none()
+    if account is None:
+        account = CreditAccount(user_id=user_id)
+        session.add(account)
+        await session.flush()
+
+    return account.balance
+
+
 async def _get_locked_account(session: AsyncSession, user_id: uuid.UUID) -> CreditAccount:
     result = await session.execute(
         select(CreditAccount)

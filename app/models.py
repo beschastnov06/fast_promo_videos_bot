@@ -35,6 +35,7 @@ class User(Base, TimestampMixin):
     first_name: Mapped[str | None] = mapped_column(Text)
     last_name: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="active", server_default="active")
+    intro_bonus_granted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
     credit_account: Mapped[CreditAccount | None] = relationship(back_populates="user")
     jobs: Mapped[list[VideoJob]] = relationship(back_populates="user")

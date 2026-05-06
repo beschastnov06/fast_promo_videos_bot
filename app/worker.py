@@ -8,14 +8,15 @@ from pathlib import Path
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from arq.connections import RedisSettings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Config, load_config
 from app.db import create_engine, create_session_factory
 from app.queue import redis_settings
-from app.repositories.video_jobs import get_job, mark_completed, mark_failed, mark_processing
+from app.repositories.credits import add_credits
+from app.repositories.video_jobs import get_job, mark_completed, mark_failed, mark_processing, mark_refunded
 from app.subtitles import write_ass_subtitles
 from app.transcriber import TranscriptionError, extract_audio, transcribe_audio
 from app.video_processor import (
@@ -28,6 +29,7 @@ from app.video_processor import (
 )
 
 logger = logging.getLogger(__name__)
+NEW_VIDEO_CALLBACK = "flow:new_video"
 
 
 async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
@@ -96,6 +98,7 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
             width=output_width,
             height=output_height,
             caption="Готово",
+            reply_markup=_new_video_keyboard(),
         )
 
         async with session_factory() as session:
@@ -110,6 +113,16 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
             async with session.begin():
                 failed_job = await get_job(session, job_uuid)
                 if failed_job:
+                    if failed_job.credits_charged > 0:
+                        await add_credits(
+                            session,
+                            user_id=failed_job.user_id,
+                            amount=failed_job.credits_charged,
+                            reason="render_failed_refund",
+                            source="worker",
+                            related_job_id=failed_job.id,
+                        )
+                        await mark_refunded(session, failed_job)
                     await mark_failed(session, failed_job, str(exc))
                     failed_chat_id = failed_job.telegram_chat_id
         if failed_chat_id is not None:
@@ -235,6 +248,14 @@ async def _create_subtitles_file(
         font_color=subtitle_color,
     )
     return subtitles_path
+
+
+def _new_video_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Смонтировать новое видео 🆕", callback_data=NEW_VIDEO_CALLBACK)],
+        ]
+    )
 
 
 if __name__ == "__main__":

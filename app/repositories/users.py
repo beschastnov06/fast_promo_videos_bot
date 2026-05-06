@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models import CreditAccount, User
 
@@ -15,7 +16,9 @@ async def get_or_create_user(
     last_name: str | None,
 ) -> User:
     result = await session.execute(
-        select(User).where(User.telegram_user_id == telegram_user_id)
+        select(User)
+        .options(selectinload(User.credit_account))
+        .where(User.telegram_user_id == telegram_user_id)
     )
     user = result.scalar_one_or_none()
 
@@ -35,3 +38,12 @@ async def get_or_create_user(
     user.first_name = first_name
     user.last_name = last_name
     return user
+
+
+async def get_user_by_telegram_id(session: AsyncSession, telegram_user_id: int) -> User | None:
+    result = await session.execute(
+        select(User)
+        .options(selectinload(User.credit_account))
+        .where(User.telegram_user_id == telegram_user_id)
+    )
+    return result.scalar_one_or_none()
