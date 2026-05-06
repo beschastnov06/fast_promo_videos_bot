@@ -363,6 +363,9 @@ async def _handle_video_file(
     duration: int | None,
     validate_duration_by_download: bool,
 ) -> None:
+    if not await _ensure_user_has_video_balance_for_message(message):
+        return
+
     if file_size and file_size > MAX_VIDEO_SIZE_BYTES:
         await message.answer(
             f"Ошибка: видео слишком большое. Максимальный размер сейчас — {MAX_VIDEO_SIZE_MB} МБ."
@@ -504,6 +507,9 @@ async def handle_change_video_callback(callback: CallbackQuery) -> None:
         await callback.answer("на этапе разработки", show_alert=True)
         return
 
+    if not await _ensure_user_has_video_balance_for_callback(callback):
+        return
+
     if callback.message:
         await callback.message.edit_reply_markup(reply_markup=None)
         await callback.message.answer(_new_video_prompt(), reply_markup=_cancel_pending_keyboard())
@@ -558,6 +564,9 @@ async def handle_new_video_callback(callback: CallbackQuery) -> None:
         await callback.answer("на этапе разработки", show_alert=True)
         return
 
+    if not await _ensure_user_has_video_balance_for_callback(callback):
+        return
+
     if callback.message:
         await callback.message.answer(_new_video_prompt())
     await callback.answer()
@@ -567,6 +576,9 @@ async def handle_new_video_callback(callback: CallbackQuery) -> None:
 async def handle_start_montage_callback(callback: CallbackQuery) -> None:
     if not _is_allowed_callback(callback):
         await callback.answer("на этапе разработки", show_alert=True)
+        return
+
+    if not await _ensure_user_has_video_balance_for_callback(callback):
         return
 
     if callback.message:
@@ -1158,6 +1170,26 @@ async def _user_video_balance_from_telegram_user(telegram_user, fallback_id: int
             return await get_balance(session, user_id=user.id)
 
 
+async def _ensure_user_has_video_balance_for_message(message: Message) -> bool:
+    balance_value = await _user_video_balance(message)
+    if balance_value >= RENDER_COST_VIDEOS:
+        return True
+
+    await message.answer(_insufficient_balance_text(), reply_markup=_menu_keyboard())
+    return False
+
+
+async def _ensure_user_has_video_balance_for_callback(callback: CallbackQuery) -> bool:
+    balance_value = await _user_video_balance_from_telegram_user(callback.from_user)
+    if balance_value >= RENDER_COST_VIDEOS:
+        return True
+
+    if callback.message:
+        await callback.message.answer(_insufficient_balance_text(), reply_markup=_menu_keyboard())
+    await callback.answer("На счете нет доступных видео", show_alert=True)
+    return False
+
+
 def _welcome_text() -> str:
     return (
         "Бот помогает быстро готовить рекламные видео-нарезки для вертикальных форматов.\n\n"
@@ -1209,6 +1241,14 @@ def _tariffs_text() -> str:
 def _menu_text(balance_value: int) -> str:
     return (
         f"На вашем счете: {balance_value} видео\n\n"
+        f"{_tariffs_text()}"
+    )
+
+
+def _insufficient_balance_text() -> str:
+    return (
+        "На вашем счете нет доступных видео.\n\n"
+        "Пополните счет, чтобы начать монтаж.\n\n"
         f"{_tariffs_text()}"
     )
 
