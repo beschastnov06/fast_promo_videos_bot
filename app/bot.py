@@ -15,9 +15,7 @@ from aiogram.types import (
     FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
     Message,
-    ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
 )
 
@@ -269,9 +267,9 @@ async def handle_video(message: Message, bot: Bot) -> None:
             "Видео принято 👌\n\n"
             "Вы можете добавить рекламный контент (текст или баннер) сверху макета - "
             "отправьте то что необходимо\n\n"
-            "❗️❗️❗️формат баннеров .png необходимо отправить в формате \"без сжатия\"\n\n"
-            f"Если дополнительного контента нет отправьте сообщение \"{NO_CONTENT_TEXT}\"",
-            reply_markup=_no_content_keyboard(),
+            "❗️формат баннеров .png необходимо отправить в формате \"без сжатия\"\n\n"
+            "Если дополнительного контента нет, нажмите кнопку ниже",
+            reply_markup=_ad_content_keyboard(),
         )
     except VideoProcessingError as exc:
         logger.exception("Video preparation failed for message_id=%s", message.message_id)
@@ -315,6 +313,31 @@ async def handle_ad_text(message: Message) -> None:
     pending.cleanup_ad_banner = False
     pending.ready_for_montage = True
     await _send_montage_settings(message, pending)
+
+
+@dp.callback_query(F.data == "content:none")
+async def handle_no_content_callback(callback: CallbackQuery) -> None:
+    if not _is_allowed_callback(callback):
+        await callback.answer("на этапе разработки", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    pending = pending_videos.get(user_id)
+    if not pending or pending.ready_for_montage:
+        await callback.answer("Видео для монтажа не найдено", show_alert=True)
+        return
+    if not callback.message:
+        await callback.answer()
+        return
+
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("Видео будет без рекламного контента")
+    pending.ad_text = None
+    pending.ad_banner_path = None
+    pending.cleanup_ad_banner = False
+    pending.ready_for_montage = True
+    await _send_montage_settings(callback.message, pending)
+    await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("settings:"))
@@ -669,12 +692,11 @@ def _user_id(message: Message) -> int:
     return message.from_user.id if message.from_user else message.chat.id
 
 
-def _no_content_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=NO_CONTENT_TEXT)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-        input_field_placeholder=NO_CONTENT_TEXT,
+def _ad_content_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=NO_CONTENT_TEXT, callback_data="content:none")],
+        ]
     )
 
 
