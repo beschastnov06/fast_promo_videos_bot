@@ -1330,6 +1330,8 @@ def _image_suffix(mime_type: str | None, file_name: str | None) -> str:
 def _is_allowed_user(message: Message) -> bool:
     if app_config is None:
         return False
+    if not app_config.restrict_telegram_users:
+        return True
 
     username = message.from_user.username if message.from_user else None
     if not username:
@@ -1339,7 +1341,11 @@ def _is_allowed_user(message: Message) -> bool:
 
 
 def _is_allowed_callback(callback: CallbackQuery) -> bool:
-    if app_config is None or not callback.from_user.username:
+    if app_config is None:
+        return False
+    if not app_config.restrict_telegram_users:
+        return True
+    if not callback.from_user.username:
         return False
 
     return callback.from_user.username.casefold() in app_config.allowed_telegram_usernames

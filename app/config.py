@@ -11,6 +11,7 @@ class Config:
     openai_api_key: str | None
     telegram_api_base: str | None
     telegram_api_is_local: bool
+    restrict_telegram_users: bool
     allowed_telegram_usernames: frozenset[str]
     database_url: str | None
     redis_url: str | None
@@ -32,6 +33,7 @@ def load_config() -> Config:
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         telegram_api_base=os.getenv("TELEGRAM_API_BASE"),
         telegram_api_is_local=os.getenv("TELEGRAM_API_IS_LOCAL", "").lower() in {"1", "true", "yes"},
+        restrict_telegram_users=_parse_bool(os.getenv("RESTRICT_TELEGRAM_USERS"), default=False),
         allowed_telegram_usernames=_parse_usernames(os.getenv("ALLOWED_TELEGRAM_USERNAMES", "")),
         database_url=os.getenv("DATABASE_URL"),
         redis_url=os.getenv("REDIS_URL"),
@@ -53,6 +55,13 @@ def _parse_usernames(value: str) -> frozenset[str]:
         if username.strip()
     }
     return frozenset(usernames)
+
+
+def _parse_bool(value: str | None, *, default: bool = False) -> bool:
+    if value is None or not value.strip():
+        return default
+
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
 
 
 def _parse_int(value: str | None, default: int, minimum: int | None = None) -> int:
