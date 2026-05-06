@@ -49,7 +49,7 @@ NO_CONTENT_TEXT = "Без контента"
 NEW_VIDEO_CALLBACK = "flow:new_video"
 START_MONTAGE_CALLBACK = "flow:start_montage"
 MENU_CALLBACK = "flow:menu"
-TOP_UP_CALLBACK = "billing:top_up"
+BUY_PACKAGE_CALLBACK_PREFIX = "billing:buy:"
 MAX_AD_TEXT_CHARS = 60
 INTRO_BONUS_VIDEOS = 3
 RENDER_COST_VIDEOS = 1
@@ -81,10 +81,10 @@ VIDEO_SPEEDS = {
     2.00: "2.00x",
 }
 TARIFF_PACKAGES = (
-    ("10 видео", "99 ₽", None),
-    ("25 видео", "229 ₽", "скидка 7%"),
-    ("50 видео", "399 ₽", "скидка 19%"),
-    ("100 видео", "699 ₽", "скидка 29%"),
+    (10, "10 видео", "99 ₽", None),
+    (25, "25 видео", "229 ₽", "скидка 7%"),
+    (50, "50 видео", "399 ₽", "скидка 19%"),
+    (100, "100 видео", "699 ₽", "скидка 29%"),
 )
 
 
@@ -399,13 +399,17 @@ async def handle_menu_callback(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@dp.callback_query(F.data == TOP_UP_CALLBACK)
-async def handle_top_up_callback(callback: CallbackQuery) -> None:
+@dp.callback_query(F.data.startswith(BUY_PACKAGE_CALLBACK_PREFIX))
+async def handle_buy_package_callback(callback: CallbackQuery) -> None:
     if not _is_allowed_callback(callback):
         await callback.answer("на этапе разработки", show_alert=True)
         return
 
-    await callback.answer("Скоро здесь будет ссылка на оплату", show_alert=True)
+    package_videos = callback.data.removeprefix(BUY_PACKAGE_CALLBACK_PREFIX) if callback.data else ""
+    await callback.answer(
+        f"Скоро здесь будет оплата пакета на {package_videos} видео",
+        show_alert=True,
+    )
 
 
 @dp.callback_query(F.data.startswith("settings:"))
@@ -874,7 +878,7 @@ def _balance_added_text(*, added_videos: int, balance_value: int) -> str:
 
 def _tariffs_text() -> str:
     lines = ["Стоимость:"]
-    for title, price, discount in TARIFF_PACKAGES:
+    for _, title, price, discount in TARIFF_PACKAGES:
         line = f"🔹 {title} — {price}"
         if discount:
             line += f" · {discount}"
@@ -904,7 +908,15 @@ def _start_keyboard() -> InlineKeyboardMarkup:
 def _menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Пополнить", callback_data=TOP_UP_CALLBACK)],
+            [
+                InlineKeyboardButton(
+                    text=f"Купить {title}",
+                    callback_data=f"{BUY_PACKAGE_CALLBACK_PREFIX}{videos_count}",
+                )
+            ]
+            for videos_count, title, _, _ in TARIFF_PACKAGES
+        ]
+        + [
             [InlineKeyboardButton(text="Начать монтаж", callback_data=START_MONTAGE_CALLBACK)],
         ]
     )
