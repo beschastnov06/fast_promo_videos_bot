@@ -38,7 +38,6 @@ from app.video_processor import (
 
 logger = logging.getLogger(__name__)
 NEW_VIDEO_CALLBACK = "flow:new_video"
-CHECK_RENDER_STATUS_CALLBACK_PREFIX = "render:status:"
 SEND_VIDEO_TIMEOUT_SECONDS = 300
 
 
@@ -94,14 +93,13 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
         if not job.telegram_video_file_id:
             raise VideoProcessingError("Telegram video file_id is missing")
 
-        await _set_render_stage(session_factory, job_uuid, "download")
         await _download_telegram_file(bot, file_id=job.telegram_video_file_id, destination=input_path)
         ad_banner_path = await _download_ad_banner(bot, job, job_dir)
 
         settings = job.settings
         output_format = settings.video_format if settings else "9:16"
         output_width, output_height = await resolve_output_dimensions(input_path, output_format)
-        await _set_render_stage(session_factory, job_uuid, "subtitles")
+        await _update_render_stage(session_factory, bot, job_uuid, "subtitles")
         subtitles_file = await _create_subtitles_file(
             config=config,
             input_path=input_path,
@@ -113,7 +111,7 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
             output_height=output_height,
         )
 
-        await _set_render_stage(session_factory, job_uuid, "render")
+        await _update_render_stage(session_factory, bot, job_uuid, "render")
         output_width, output_height = await process_video(
             input_path=input_path,
             output_path=output_path,
@@ -127,7 +125,7 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
             strip_metadata=settings.strip_metadata if settings else True,
         )
 
-        await _set_render_stage(session_factory, job_uuid, "upload")
+        await _update_render_stage(session_factory, bot, job_uuid, "upload")
         await _delete_status_message(
             bot=bot,
             chat_id=job.telegram_chat_id,
@@ -274,6 +272,8 @@ async def _edit_status_message(
     try:
         await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
     except Exception as exc:
+        if "message is not modified" in str(exc).casefold():
+            return
         logger.warning(
             "Failed to edit render status message, sending a new one: chat_id=%s message_id=%s error=%s",
             chat_id,
@@ -303,8 +303,7 @@ async def _replace_queue_status_with_processing_message(
     try:
         message = await bot.send_message(
             chat_id=chat_id,
-            text="Отправили видео на монтаж",
-            reply_markup=_check_render_status_keyboard(job_id),
+            text=await _render_status_text(session_factory, job_id),
         )
     except Exception:
         logger.exception("Failed to send processing status message: job_id=%s", job_id)
@@ -328,16 +327,90 @@ async def _refresh_queue_positions(*, bot: Bot, session: AsyncSession) -> None:
         )
 
 
-async def _set_render_stage(
+async def _update_render_stage(
     session_factory: async_sessionmaker[AsyncSession],
+    bot: Bot,
     job_id: uuid.UUID,
     stage: str,
 ) -> None:
+    status_chat_id = None
+    status_message_id = None
+    status_text = None
     async with session_factory() as session:
         async with session.begin():
             job = await get_job(session, job_id)
             if job:
                 await set_render_stage(session, job, stage)
+                status_chat_id = job.telegram_chat_id
+                status_message_id = job.telegram_status_message_id
+                status_text = _render_status_text_for_job(job)
+
+    if status_chat_id is not None and status_text is not None:
+        await _edit_status_message(
+            bot=bot,
+            chat_id=status_chat_id,
+            message_id=status_message_id,
+            text=status_text,
+        )
+
+
+async def _render_status_text(session_factory: async_sessionmaker[AsyncSession], job_id: uuid.UUID) -> str:
+    async with session_factory() as session:
+        job = await get_job(session, job_id)
+    if job is None:
+        return _render_status_text_for_stage("download")
+
+    return _render_status_text_for_job(job)
+
+
+def _render_status_text_for_job(job) -> str:
+    return _render_status_text_for_stage(
+        job.render_stage or "download",
+        ad_content_type=job.ad_content_type,
+        video_speed=float(job.settings.video_speed) if job.settings else 1.0,
+        mirror=job.settings.mirror if job.settings else False,
+    )
+
+
+def _render_status_text_for_stage(
+    stage: str,
+    *,
+    ad_content_type: str = "none",
+    video_speed: float = 1.0,
+    mirror: bool = False,
+) -> str:
+    stage_order = ("download", "subtitles", "render", "upload")
+    stage_labels = {
+        "download": "Получение видео",
+        "subtitles": "Субтитры",
+        "render": _render_stage_label(ad_content_type=ad_content_type, video_speed=video_speed, mirror=mirror),
+        "upload": "Отправка видео",
+    }
+    current_index = stage_order.index(stage) if stage in stage_order else len(stage_order)
+
+    lines = ["Статус:"]
+    for index, stage_key in enumerate(stage_order):
+        if stage in {"completed", "failed", "cancelled"} or index < current_index:
+            icon = "✅"
+        elif index == current_index:
+            icon = "🕜"
+        else:
+            icon = "⬜️"
+        lines.append(f"{icon} {stage_labels[stage_key]}")
+
+    return "\n".join(lines)
+
+
+def _render_stage_label(*, ad_content_type: str, video_speed: float, mirror: bool) -> str:
+    details = ["формат"]
+    if ad_content_type in {"text", "banner"}:
+        details.append("реклама")
+    if video_speed != 1.0:
+        details.append("ускорение")
+    if mirror:
+        details.append("зеркальность")
+    details.append("сборка")
+    return f"Монтаж видео ({', '.join(details)})"
 
 
 async def _delete_status_message(*, bot: Bot, chat_id: int, message_id: int | None) -> None:
@@ -428,19 +501,6 @@ async def _create_subtitles_file(
         height=output_height,
     )
     return subtitles_path
-
-
-def _check_render_status_keyboard(job_id: uuid.UUID) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Проверить статус",
-                    callback_data=f"{CHECK_RENDER_STATUS_CALLBACK_PREFIX}{job_id}",
-                )
-            ],
-        ]
-    )
 
 
 def _new_video_keyboard() -> InlineKeyboardMarkup:

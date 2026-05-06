@@ -65,7 +65,6 @@ NEW_VIDEO_CALLBACK = "flow:new_video"
 START_MONTAGE_CALLBACK = "flow:start_montage"
 MENU_CALLBACK = "flow:menu"
 BUY_PACKAGE_CALLBACK_PREFIX = "billing:buy:"
-CHECK_RENDER_STATUS_CALLBACK_PREFIX = "render:status:"
 MAX_AD_TEXT_CHARS = 60
 INTRO_BONUS_VIDEOS = 3
 RENDER_COST_VIDEOS = 1
@@ -469,32 +468,6 @@ async def handle_buy_package_callback(callback: CallbackQuery) -> None:
         f"Скоро здесь будет оплата пакета на {package_videos} видео",
         show_alert=True,
     )
-
-
-@dp.callback_query(F.data.startswith(CHECK_RENDER_STATUS_CALLBACK_PREFIX))
-async def handle_check_render_status_callback(callback: CallbackQuery) -> None:
-    if not _is_allowed_callback(callback):
-        await callback.answer("на этапе разработки", show_alert=True)
-        return
-
-    job_id = (callback.data or "").removeprefix(CHECK_RENDER_STATUS_CALLBACK_PREFIX)
-    try:
-        job_uuid = uuid.UUID(job_id)
-    except ValueError:
-        await callback.answer("Статус не найден", show_alert=True)
-        return
-
-    session_factory = _db_session_factory()
-    async with session_factory() as session:
-        job = await get_job(session, job_uuid)
-
-    if job is None:
-        await callback.answer("Статус не найден", show_alert=True)
-        return
-
-    if callback.message:
-        await callback.message.answer(_render_status_text(job))
-    await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("settings:"))
@@ -1123,42 +1096,6 @@ def _menu_keyboard() -> InlineKeyboardMarkup:
 
 def _queue_position_text(position: int) -> str:
     return f"Вы {position} в очереди"
-
-
-def _render_status_text(job) -> str:
-    stage_order = ("download", "subtitles", "render", "upload")
-    stage_labels = {
-        "download": "Получение видео",
-        "subtitles": "Субтитры",
-        "render": _render_stage_label(job),
-        "upload": "Отправка видео",
-    }
-    stage = job.render_stage or "download"
-    current_index = stage_order.index(stage) if stage in stage_order else len(stage_order)
-
-    lines = ["Статус:"]
-    for index, stage_key in enumerate(stage_order):
-        if stage in {"completed", "failed", "cancelled"} or index < current_index:
-            icon = "✅"
-        elif index == current_index:
-            icon = "🕜"
-        else:
-            icon = "⬜️"
-        lines.append(f"{icon} {stage_labels[stage_key]}")
-
-    return "\n".join(lines)
-
-
-def _render_stage_label(job) -> str:
-    details = ["формат"]
-    if job.ad_content_type in {"text", "banner"}:
-        details.append("реклама")
-    if job.settings and float(job.settings.video_speed) != 1.0:
-        details.append("ускорение")
-    if job.settings and job.settings.mirror:
-        details.append("зеркальность")
-    details.append("сборка")
-    return f"Монтаж видео ({', '.join(details)})"
 
 
 def _cancel_montage_keyboard() -> ReplyKeyboardMarkup:
