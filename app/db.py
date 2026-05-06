@@ -13,7 +13,7 @@ def create_engine(config: Config) -> AsyncEngine:
         raise RuntimeError("DATABASE_URL is not set.")
 
     return create_async_engine(
-        config.database_url,
+        async_database_url(config.database_url),
         pool_pre_ping=True,
     )
 
@@ -33,3 +33,10 @@ async def session_scope(
     async with session_factory() as session:
         async with session.begin():
             yield session
+
+
+def async_database_url(database_url: str) -> str:
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    return database_url

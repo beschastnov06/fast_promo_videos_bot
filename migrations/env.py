@@ -21,7 +21,12 @@ def _database_url() -> str:
     if not database_url:
         raise RuntimeError("DATABASE_URL is not set.")
 
-    return database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+    if database_url.startswith("postgresql+asyncpg://"):
+        return database_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+
+    return database_url
 
 
 def run_migrations_offline() -> None:
