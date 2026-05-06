@@ -127,11 +127,6 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
         )
 
         await _update_render_stage(session_factory, bot, job_uuid, "upload")
-        await _delete_status_message(
-            bot=bot,
-            chat_id=job.telegram_chat_id,
-            message_id=job.telegram_status_message_id,
-        )
         await bot.send_message(chat_id=job.telegram_chat_id, text="Видео смонтировано отправляем вам")
 
         await _send_ready_video(
@@ -141,6 +136,11 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
             output_width=output_width,
             output_height=output_height,
             balance_value=await _job_balance(session_factory, job_uuid),
+        )
+        await _delete_status_message(
+            bot=bot,
+            chat_id=job.telegram_chat_id,
+            message_id=job.telegram_status_message_id,
         )
 
         async with session_factory() as session:
