@@ -269,8 +269,17 @@ async def _edit_status_message(
 
     try:
         await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
-    except Exception:
-        logger.exception("Failed to edit render status message: chat_id=%s message_id=%s", chat_id, message_id)
+    except Exception as exc:
+        logger.warning(
+            "Failed to edit render status message, sending a new one: chat_id=%s message_id=%s error=%s",
+            chat_id,
+            message_id,
+            exc,
+        )
+        try:
+            await bot.send_message(chat_id=chat_id, text=text)
+        except Exception:
+            logger.exception("Failed to send fallback render status message: chat_id=%s", chat_id)
 
 
 async def _replace_queue_status_with_processing_message(
