@@ -150,7 +150,24 @@ class UsernameWhitelistMiddleware(BaseMiddleware):
         return None
 
 
+class ActiveRenderMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[Message, dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: dict[str, Any],
+    ) -> Any:
+        if (event.text or "").strip() == CANCEL_MONTAGE_TEXT:
+            return await handler(event, data)
+
+        if await _has_active_render_job(_user_id(event)):
+            return None
+
+        return await handler(event, data)
+
+
 dp.message.outer_middleware(UsernameWhitelistMiddleware())
+dp.message.outer_middleware(ActiveRenderMiddleware())
 
 
 @dp.message(CommandStart())
@@ -888,6 +905,15 @@ async def _cancel_latest_active_job(message: Message) -> tuple[bool, int, str, i
             await mark_cancelled(session, job)
             balance_value = await get_balance(session, user_id=user.id)
             return True, balance_value, "Монтаж отменен", job.telegram_chat_id, job.telegram_status_message_id
+
+
+async def _has_active_render_job(telegram_user_id: int) -> bool:
+    if db_session_factory is None:
+        return False
+
+    async with db_session_factory() as session:
+        job = await get_latest_active_job_for_telegram_user(session, telegram_user_id=telegram_user_id)
+        return job is not None
 
 
 async def _mark_pending_cancelled(pending: PendingVideo) -> None:
