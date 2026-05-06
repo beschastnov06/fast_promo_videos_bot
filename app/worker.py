@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 import uuid
@@ -30,6 +31,7 @@ from app.video_processor import (
 
 logger = logging.getLogger(__name__)
 NEW_VIDEO_CALLBACK = "flow:new_video"
+SEND_VIDEO_TIMEOUT_SECONDS = 300
 
 
 async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
@@ -92,13 +94,12 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
         )
 
         output_width, output_height = VIDEO_FORMATS.get(output_format, (WIDTH, HEIGHT))
-        await bot.send_video(
+        await _send_ready_video(
+            bot=bot,
             chat_id=job.telegram_chat_id,
-            video=FSInputFile(output_path),
-            width=output_width,
-            height=output_height,
-            caption="Готово",
-            reply_markup=_new_video_keyboard(),
+            output_path=output_path,
+            output_width=output_width,
+            output_height=output_height,
         )
 
         async with session_factory() as session:
@@ -212,6 +213,51 @@ async def _download_ad_banner(bot: Bot, job, job_dir: Path) -> Path | None:
     banner_path = job_dir / f"banner{suffix}"
     await _download_telegram_file(bot, file_id=job.ad_banner_file_id, destination=banner_path)
     return banner_path
+
+
+async def _send_ready_video(
+    *,
+    bot: Bot,
+    chat_id: int,
+    output_path: Path,
+    output_width: int,
+    output_height: int,
+) -> None:
+    file_size_mb = output_path.stat().st_size / 1024 / 1024
+    logger.info("Sending rendered video: path=%s size=%.2fMB", output_path, file_size_mb)
+
+    try:
+        await bot.send_message(chat_id=chat_id, text="Видео смонтировано, отправляю файл в Telegram...")
+    except Exception:
+        logger.exception("Failed to send upload status message")
+
+    try:
+        await asyncio.wait_for(
+            bot.send_video(
+                chat_id=chat_id,
+                video=FSInputFile(output_path),
+                width=output_width,
+                height=output_height,
+                caption="Готово",
+                reply_markup=_new_video_keyboard(),
+            ),
+            timeout=SEND_VIDEO_TIMEOUT_SECONDS,
+        )
+        logger.info("Rendered video sent as video: path=%s", output_path)
+        return
+    except asyncio.TimeoutError:
+        logger.warning("Sending rendered video timed out, trying document fallback: path=%s", output_path)
+
+    await asyncio.wait_for(
+        bot.send_document(
+            chat_id=chat_id,
+            document=FSInputFile(output_path),
+            caption="Готово",
+            reply_markup=_new_video_keyboard(),
+        ),
+        timeout=SEND_VIDEO_TIMEOUT_SECONDS,
+    )
+    logger.info("Rendered video sent as document fallback: path=%s", output_path)
 
 
 async def _create_subtitles_file(
