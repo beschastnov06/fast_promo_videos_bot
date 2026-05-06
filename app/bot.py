@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 import logging
 import uuid
 from pathlib import Path
@@ -67,6 +68,7 @@ BUY_PACKAGE_CALLBACK_PREFIX = "billing:buy:"
 MAX_AD_TEXT_CHARS = 60
 INTRO_BONUS_VIDEOS = 3
 RENDER_COST_VIDEOS = 1
+ACTIVE_RENDER_GRACE_SECONDS = 300
 DEFAULT_VIDEO_FORMAT = "9:16"
 DEFAULT_FILL_COLOR = "black"
 DEFAULT_SUBTITLE_FONT = "DejaVu Sans"
@@ -913,7 +915,17 @@ async def _has_active_render_job(telegram_user_id: int) -> bool:
 
     async with db_session_factory() as session:
         job = await get_latest_active_job_for_telegram_user(session, telegram_user_id=telegram_user_id)
-        return job is not None
+        if job is None:
+            return False
+
+        active_since = job.started_at or job.queued_at or job.created_at
+        if active_since is None:
+            return False
+        if active_since.tzinfo is None:
+            active_since = active_since.replace(tzinfo=UTC)
+
+        max_active_seconds = _app_config().render_job_timeout_seconds + ACTIVE_RENDER_GRACE_SECONDS
+        return (datetime.now(UTC) - active_since).total_seconds() <= max_active_seconds
 
 
 async def _mark_pending_cancelled(pending: PendingVideo) -> None:
