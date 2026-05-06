@@ -45,6 +45,7 @@ from app.video_processor import (
     VIDEO_FORMATS,
     VideoProcessingError,
     ensure_ffmpeg_available,
+    probe_video_duration,
 )
 
 
@@ -56,6 +57,7 @@ logger = logging.getLogger(__name__)
 
 MAX_VIDEO_SIZE_MB = 20
 MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
+MAX_VIDEO_DURATION_SECONDS = 60
 MAX_BANNER_SIZE_MB = 5
 MAX_BANNER_SIZE_BYTES = MAX_BANNER_SIZE_MB * 1024 * 1024
 TMP_DIR = Path("tmp")
@@ -66,6 +68,7 @@ START_MONTAGE_CALLBACK = "flow:start_montage"
 MENU_CALLBACK = "flow:menu"
 CHANGE_VIDEO_CALLBACK = "flow:change_video"
 CHANGE_AD_CONTENT_CALLBACK = "content:change"
+CANCEL_PENDING_CALLBACK = "flow:cancel_pending"
 BUY_PACKAGE_CALLBACK_PREFIX = "billing:buy:"
 MAX_AD_TEXT_CHARS = 60
 INTRO_BONUS_VIDEOS = 3
@@ -256,18 +259,30 @@ async def set_ad_banner_document(message: Message, bot: Bot) -> None:
         await handle_other(message)
         return
 
-    if not _is_image_document(document.mime_type, document.file_name):
-        await handle_other(message)
+    if _is_video_document(document.mime_type, document.file_name):
+        await _handle_video_file(
+            message=message,
+            bot=bot,
+            file_id=document.file_id,
+            file_unique_id=document.file_unique_id,
+            file_size=document.file_size,
+            duration=None,
+            validate_duration_by_download=True,
+        )
         return
 
-    await _handle_ad_banner_file(
-        message=message,
-        bot=bot,
-        file_id=document.file_id,
-        suffix=_image_suffix(document.mime_type, document.file_name),
-        file_size=document.file_size,
-        display_name=document.file_name,
-    )
+    if _is_image_document(document.mime_type, document.file_name):
+        await _handle_ad_banner_file(
+            message=message,
+            bot=bot,
+            file_id=document.file_id,
+            suffix=_image_suffix(document.mime_type, document.file_name),
+            file_size=document.file_size,
+            display_name=document.file_name,
+        )
+        return
+
+    await handle_other(message)
 
 
 async def _handle_ad_banner_file(
@@ -328,10 +343,44 @@ async def handle_cancel_montage(message: Message, bot: Bot) -> None:
 @dp.message(F.video)
 async def handle_video(message: Message, bot: Bot) -> None:
     video = message.video
+    await _handle_video_file(
+        message=message,
+        bot=bot,
+        file_id=video.file_id,
+        file_unique_id=video.file_unique_id,
+        file_size=video.file_size,
+        duration=video.duration,
+        validate_duration_by_download=False,
+    )
 
-    if video.file_size and video.file_size > MAX_VIDEO_SIZE_BYTES:
-        await message.answer(f"Ошибка: видео слишком большое. Максимальный размер сейчас — {MAX_VIDEO_SIZE_MB} МБ.")
+async def _handle_video_file(
+    *,
+    message: Message,
+    bot: Bot,
+    file_id: str,
+    file_unique_id: str | None,
+    file_size: int | None,
+    duration: int | None,
+    validate_duration_by_download: bool,
+) -> None:
+    if file_size and file_size > MAX_VIDEO_SIZE_BYTES:
+        await message.answer(
+            f"Ошибка: видео слишком большое. Максимальный размер сейчас — {MAX_VIDEO_SIZE_MB} МБ."
+        )
         return
+
+    if duration is not None and duration > MAX_VIDEO_DURATION_SECONDS:
+        await message.answer(
+            f"Ошибка: видео слишком длинное. Максимальная длительность сейчас — {MAX_VIDEO_DURATION_SECONDS} секунд."
+        )
+        return
+
+    if validate_duration_by_download:
+        try:
+            await _validate_telegram_video_duration(bot, file_id=file_id)
+        except VideoProcessingError as exc:
+            await message.answer(str(exc))
+            return
 
     user_id = _user_id(message)
     old_pending = pending_videos.pop(user_id, None)
@@ -339,11 +388,11 @@ async def handle_video(message: Message, bot: Bot) -> None:
         await _mark_pending_cancelled(old_pending)
 
     try:
-        job = await _create_pending_job(message, video.file_id, video.file_unique_id)
+        job = await _create_pending_job(message, file_id, file_unique_id)
         pending = PendingVideo(
             job_id=job.id,
-            telegram_video_file_id=video.file_id,
-            telegram_video_file_unique_id=video.file_unique_id,
+            telegram_video_file_id=file_id,
+            telegram_video_file_unique_id=file_unique_id,
         )
         pending_videos[user_id] = pending
 
@@ -361,6 +410,30 @@ async def handle_video(message: Message, bot: Bot) -> None:
     except Exception as exc:
         logger.exception("Unexpected error while preparing video message_id=%s", message.message_id)
         await message.answer(f"Ошибка: не удалось принять видео. {exc}")
+
+
+async def _validate_telegram_video_duration(bot: Bot, *, file_id: str) -> None:
+    validation_dir = TMP_DIR / "validation"
+    validation_dir.mkdir(parents=True, exist_ok=True)
+    validation_path = validation_dir / f"{uuid.uuid4()}.video"
+    try:
+        telegram_file = await bot.get_file(file_id)
+        if not telegram_file.file_path:
+            raise VideoProcessingError("Ошибка: не удалось проверить длительность видео.")
+
+        await bot.download_file(telegram_file.file_path, destination=validation_path)
+        duration = await probe_video_duration(validation_path)
+    except VideoProcessingError:
+        raise
+    except Exception as exc:
+        raise VideoProcessingError("Ошибка: не удалось проверить длительность видео.") from exc
+    finally:
+        validation_path.unlink(missing_ok=True)
+
+    if duration > MAX_VIDEO_DURATION_SECONDS:
+        raise VideoProcessingError(
+            f"Ошибка: видео слишком длинное. Максимальная длительность сейчас — {MAX_VIDEO_DURATION_SECONDS} секунд."
+        )
 
 
 @dp.message(F.text)
@@ -433,7 +506,7 @@ async def handle_change_video_callback(callback: CallbackQuery) -> None:
 
     if callback.message:
         await callback.message.edit_reply_markup(reply_markup=None)
-        await callback.message.answer(f"Отправьте видео до {MAX_VIDEO_SIZE_MB} МБ для нового монтажа")
+        await callback.message.answer(_new_video_prompt(), reply_markup=_cancel_pending_keyboard())
     await callback.answer()
 
 
@@ -461,6 +534,24 @@ async def handle_change_ad_content_callback(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+@dp.callback_query(F.data == CANCEL_PENDING_CALLBACK)
+async def handle_cancel_pending_callback(callback: CallbackQuery) -> None:
+    if not _is_allowed_callback(callback):
+        await callback.answer("на этапе разработки", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    pending = pending_videos.pop(user_id, None)
+    if pending:
+        await _mark_pending_cancelled(pending)
+
+    if callback.message:
+        await callback.message.edit_reply_markup(reply_markup=None)
+        balance_value = await _user_video_balance_from_telegram_user(callback.from_user)
+        await callback.message.answer(_menu_text(balance_value), reply_markup=_menu_keyboard())
+    await callback.answer()
+
+
 @dp.callback_query(F.data == NEW_VIDEO_CALLBACK)
 async def handle_new_video_callback(callback: CallbackQuery) -> None:
     if not _is_allowed_callback(callback):
@@ -468,7 +559,7 @@ async def handle_new_video_callback(callback: CallbackQuery) -> None:
         return
 
     if callback.message:
-        await callback.message.answer(f"Отправьте видео до {MAX_VIDEO_SIZE_MB} МБ для нового монтажа")
+        await callback.message.answer(_new_video_prompt())
     await callback.answer()
 
 
@@ -479,7 +570,7 @@ async def handle_start_montage_callback(callback: CallbackQuery) -> None:
         return
 
     if callback.message:
-        await callback.message.answer(f"Отправьте видео до {MAX_VIDEO_SIZE_MB} МБ для нового монтажа")
+        await callback.message.answer(_new_video_prompt())
     await callback.answer()
 
 
@@ -677,6 +768,7 @@ def _montage_settings_keyboard(pending: PendingVideo) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=metadata_text, callback_data="settings:metadata")],
             [InlineKeyboardButton(text="Поменять рекламный контент", callback_data=CHANGE_AD_CONTENT_CALLBACK)],
             [InlineKeyboardButton(text="✅ Отправить в монтаж", callback_data="settings:render")],
+            _cancel_inline_row(),
         ]
     )
 
@@ -688,6 +780,7 @@ def _format_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="9:16 — с небольшим приближением", callback_data="settings:format:9_16_soft_zoom")],
             [InlineKeyboardButton(text="9:16 — растянутый, без полей", callback_data="settings:format:9_16_cover")],
             [InlineKeyboardButton(text="Назад", callback_data="settings:main")],
+            _cancel_inline_row(),
         ]
     )
 
@@ -698,6 +791,7 @@ def _fill_color_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Черное", callback_data="settings:fill:black")],
             [InlineKeyboardButton(text="Белое", callback_data="settings:fill:white")],
             [InlineKeyboardButton(text="Назад", callback_data="settings:main")],
+            _cancel_inline_row(),
         ]
     )
 
@@ -708,7 +802,7 @@ def _subtitle_font_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=name, callback_data=f"settings:font:{name}")]
             for name in SUBTITLE_FONTS
         ]
-        + [[InlineKeyboardButton(text="Назад", callback_data="settings:main")]]
+        + [[InlineKeyboardButton(text="Назад", callback_data="settings:main")], _cancel_inline_row()]
     )
 
 
@@ -718,6 +812,7 @@ def _subtitle_color_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Белый", callback_data="settings:subtitle_color:white")],
             [InlineKeyboardButton(text="Черный", callback_data="settings:subtitle_color:black")],
             [InlineKeyboardButton(text="Назад", callback_data="settings:main")],
+            _cancel_inline_row(),
         ]
     )
 
@@ -731,6 +826,7 @@ def _video_speed_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="1.50x", callback_data="settings:speed:1_50")],
             [InlineKeyboardButton(text="2.00x", callback_data="settings:speed:2_00")],
             [InlineKeyboardButton(text="Назад", callback_data="settings:main")],
+            _cancel_inline_row(),
         ]
     )
 
@@ -1073,7 +1169,8 @@ def _welcome_text() -> str:
 def _how_it_works_text() -> str:
     return (
         "Краткая информация о работе c ботом:\n"
-        f"1. 🎞 Отправляете видео (до {MAX_VIDEO_SIZE_MB} МБ), которое необходимо смонтировать\n"
+        f"1. 🎞 Отправляете видео (до {MAX_VIDEO_SIZE_MB} МБ и {MAX_VIDEO_DURATION_SECONDS} секунд), "
+        "которое необходимо смонтировать\n"
         "2. 📌 Если необходимо, отправляете рекламный контент (текст или баннер)\n"
         "3. ⚙️ Выбираете настройки для монтажа\n"
         "4. ✅ Получаете готовое видео"
@@ -1085,6 +1182,10 @@ def _change_ad_content_text() -> str:
         "Добавьте рекламный контент (текст или баннер) сверху макета - отправьте то что необходимо\n\n"
         "❗️формат баннеров .png необходимо отправить в формате \"без сжатия\""
     )
+
+
+def _new_video_prompt() -> str:
+    return f"Отправьте видео до {MAX_VIDEO_SIZE_MB} МБ и {MAX_VIDEO_DURATION_SECONDS} секунд для нового монтажа"
 
 
 def _balance_added_text(*, added_videos: int, balance_value: int) -> str:
@@ -1165,6 +1266,14 @@ def _is_image_document(mime_type: str | None, file_name: str | None) -> bool:
     return suffix in {".jpg", ".jpeg", ".png", ".webp"}
 
 
+def _is_video_document(mime_type: str | None, file_name: str | None) -> bool:
+    if mime_type and mime_type.startswith("video/"):
+        return True
+
+    suffix = Path(file_name or "").suffix.casefold()
+    return suffix in {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
+
+
 def _image_suffix(mime_type: str | None, file_name: str | None) -> str:
     suffix = Path(file_name or "").suffix.casefold()
     if suffix in {".jpg", ".jpeg", ".png", ".webp"}:
@@ -1205,6 +1314,7 @@ def _ad_content_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text=NO_CONTENT_TEXT, callback_data="content:none")],
             [InlineKeyboardButton(text="Поменять видео", callback_data=CHANGE_VIDEO_CALLBACK)],
+            _cancel_inline_row(),
         ]
     )
 
@@ -1213,8 +1323,17 @@ def _change_ad_content_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=NO_CONTENT_TEXT, callback_data="content:none")],
+            _cancel_inline_row(),
         ]
     )
+
+
+def _cancel_pending_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[_cancel_inline_row()])
+
+
+def _cancel_inline_row() -> list[InlineKeyboardButton]:
+    return [InlineKeyboardButton(text="❌ Отмена", callback_data=CANCEL_PENDING_CALLBACK)]
 
 
 if __name__ == "__main__":

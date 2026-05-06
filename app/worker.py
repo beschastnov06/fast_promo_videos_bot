@@ -127,7 +127,6 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
         )
 
         await _update_render_stage(session_factory, bot, job_uuid, "upload")
-        await bot.send_message(chat_id=job.telegram_chat_id, text="Видео смонтировано отправляем вам")
 
         await _send_ready_video(
             bot=bot,
@@ -519,7 +518,7 @@ def _new_video_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Пополнить счет", callback_data=MENU_CALLBACK)],
-            [InlineKeyboardButton(text="Смонтировать новое видео 🆕", callback_data=NEW_VIDEO_CALLBACK)],
+            [InlineKeyboardButton(text="Новое видео", callback_data=NEW_VIDEO_CALLBACK)],
         ]
     )
 

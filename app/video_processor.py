@@ -296,6 +296,34 @@ async def resolve_output_dimensions(input_path: Path, output_format: str = "9:16
     return VIDEO_FORMATS.get(output_format, (WIDTH, HEIGHT))
 
 
+async def probe_video_duration(input_path: Path) -> float:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(input_path),
+    ]
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise VideoProcessingError(
+            f"Could not read video duration: {stderr.decode('utf-8', errors='replace')}"
+        )
+
+    try:
+        return float(stdout.decode("utf-8", errors="replace").strip())
+    except ValueError as exc:
+        raise VideoProcessingError("Could not parse video duration") from exc
+
+
 async def _probe_video_dimensions(input_path: Path) -> tuple[int, int]:
     cmd = [
         "ffprobe",
