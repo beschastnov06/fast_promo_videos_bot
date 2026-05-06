@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import Config, load_config
 from app.db import create_engine, create_session_factory
 from app.queue import redis_settings
-from app.repositories.credits import add_credits
+from app.repositories.credits import add_credits, get_balance
 from app.repositories.video_jobs import (
     get_job,
     list_queued_jobs,
@@ -38,6 +38,7 @@ from app.video_processor import (
 
 logger = logging.getLogger(__name__)
 NEW_VIDEO_CALLBACK = "flow:new_video"
+MENU_CALLBACK = "flow:menu"
 SEND_VIDEO_TIMEOUT_SECONDS = 300
 
 
@@ -139,6 +140,7 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
             output_path=output_path,
             output_width=output_width,
             output_height=output_height,
+            balance_value=await _job_balance(session_factory, job_uuid),
         )
 
         async with session_factory() as session:
@@ -430,9 +432,11 @@ async def _send_ready_video(
     output_path: Path,
     output_width: int,
     output_height: int,
+    balance_value: int,
 ) -> None:
     file_size_mb = output_path.stat().st_size / 1024 / 1024
     logger.info("Sending rendered video: path=%s size=%.2fMB", output_path, file_size_mb)
+    caption = f"Готово\n\nОстаток: {balance_value} видео"
 
     try:
         await asyncio.wait_for(
@@ -441,7 +445,7 @@ async def _send_ready_video(
                 video=FSInputFile(output_path),
                 width=output_width,
                 height=output_height,
-                caption="Готово",
+                caption=caption,
                 reply_markup=_new_video_keyboard(),
             ),
             timeout=SEND_VIDEO_TIMEOUT_SECONDS,
@@ -455,7 +459,7 @@ async def _send_ready_video(
         bot.send_document(
             chat_id=chat_id,
             document=FSInputFile(output_path),
-            caption="Готово",
+            caption=caption,
             reply_markup=_new_video_keyboard(),
         ),
         timeout=SEND_VIDEO_TIMEOUT_SECONDS,
@@ -503,9 +507,18 @@ async def _create_subtitles_file(
     return subtitles_path
 
 
+async def _job_balance(session_factory: async_sessionmaker[AsyncSession], job_id: uuid.UUID) -> int:
+    async with session_factory() as session:
+        job = await get_job(session, job_id)
+        if job is None:
+            return 0
+        return await get_balance(session, user_id=job.user_id)
+
+
 def _new_video_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="Пополнить счет", callback_data=MENU_CALLBACK)],
             [InlineKeyboardButton(text="Смонтировать новое видео 🆕", callback_data=NEW_VIDEO_CALLBACK)],
         ]
     )
