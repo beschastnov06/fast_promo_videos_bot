@@ -39,7 +39,7 @@ from app.video_processor import (
 logger = logging.getLogger(__name__)
 NEW_VIDEO_CALLBACK = "flow:new_video"
 MENU_CALLBACK = "flow:menu"
-SEND_VIDEO_TIMEOUT_SECONDS = 300
+SEND_VIDEO_TIMEOUT_SECONDS = 120
 
 
 async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
