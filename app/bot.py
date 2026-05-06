@@ -14,7 +14,9 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     Message,
+    ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -25,7 +27,18 @@ from app.models import VideoJobSettings
 from app.queue import enqueue_render_job
 from app.repositories.credits import InsufficientCreditsError, add_credits, charge_credits, get_balance
 from app.repositories.users import get_or_create_user
-from app.repositories.video_jobs import create_draft_job, get_job, mark_queued
+from app.repositories.video_jobs import (
+    create_draft_job,
+    get_job,
+    get_latest_active_job_for_telegram_user,
+    get_queue_position,
+    list_queued_jobs,
+    mark_cancelled,
+    mark_failed,
+    mark_queued,
+    mark_refunded,
+    set_status_message_id,
+)
 from app.video_processor import (
     FFmpegNotFoundError,
     VIDEO_FORMATS,
@@ -46,6 +59,7 @@ MAX_BANNER_SIZE_MB = 5
 MAX_BANNER_SIZE_BYTES = MAX_BANNER_SIZE_MB * 1024 * 1024
 TMP_DIR = Path("tmp")
 NO_CONTENT_TEXT = "Без контента"
+CANCEL_MONTAGE_TEXT = "Отменить монтаж"
 NEW_VIDEO_CALLBACK = "flow:new_video"
 START_MONTAGE_CALLBACK = "flow:start_montage"
 MENU_CALLBACK = "flow:menu"
@@ -263,6 +277,32 @@ async def _handle_ad_banner_file(
     pending.ad_banner_name = display_name or f"banner{suffix}"
     pending.ready_for_montage = True
     await _send_montage_settings(message, pending)
+
+
+@dp.message(F.text == CANCEL_MONTAGE_TEXT)
+async def handle_cancel_montage(message: Message, bot: Bot) -> None:
+    user_id = _user_id(message)
+    pending = pending_videos.pop(user_id, None)
+    if pending:
+        await _mark_pending_cancelled(pending)
+        balance_value = await _user_video_balance(message)
+        await message.answer("Монтаж отменен", reply_markup=ReplyKeyboardRemove())
+        await message.answer(_menu_text(balance_value), reply_markup=_menu_keyboard())
+        return
+
+    _, balance_value, note, status_chat_id, status_message_id = await _cancel_latest_active_job(message)
+    if status_chat_id is not None and status_message_id is not None:
+        try:
+            await bot.edit_message_text(
+                chat_id=status_chat_id,
+                message_id=status_message_id,
+                text="Монтаж отменен",
+            )
+        except Exception:
+            logger.exception("Failed to edit cancelled job status message")
+        await _refresh_queue_positions(bot)
+    await message.answer(note, reply_markup=ReplyKeyboardRemove())
+    await message.answer(_menu_text(balance_value), reply_markup=_menu_keyboard())
 
 
 @dp.message(F.video)
@@ -683,8 +723,14 @@ async def _process_pending_video(
     pending_videos.pop(user_id, None)
 
     try:
-        await _persist_and_enqueue_pending(pending)
+        queue_position = await _persist_pending_for_render(pending)
         await message.answer("Видео поставлено в очередь на монтаж")
+        status_message = await message.answer(
+            _queue_position_text(queue_position),
+            reply_markup=_cancel_montage_keyboard(),
+        )
+        await _set_job_status_message_id(pending.job_id, status_message.message_id)
+        await enqueue_render_job(_app_config(), str(pending.job_id))
     except InsufficientCreditsError:
         pending_videos[user_id] = pending
         await message.answer(
@@ -695,6 +741,7 @@ async def _process_pending_video(
         )
     except Exception as exc:
         logger.exception("Failed to enqueue render job: job_id=%s", pending.job_id)
+        await _mark_enqueue_failed_and_refund(pending.job_id, str(exc))
         await message.answer(f"Ошибка: не удалось поставить видео в очередь. {exc}")
 
 
@@ -724,7 +771,7 @@ async def _create_pending_job(
             )
 
 
-async def _persist_and_enqueue_pending(pending: PendingVideo) -> None:
+async def _persist_pending_for_render(pending: PendingVideo) -> int:
     session_factory = _db_session_factory()
     async with session_factory() as session:
         async with session.begin():
@@ -751,8 +798,96 @@ async def _persist_and_enqueue_pending(pending: PendingVideo) -> None:
 
             _copy_pending_settings(pending, job.settings)
             await mark_queued(session, job, credits_charged=RENDER_COST_VIDEOS)
+            return await get_queue_position(session, job)
 
-    await enqueue_render_job(_app_config(), str(pending.job_id))
+
+async def _set_job_status_message_id(job_id: uuid.UUID, message_id: int) -> None:
+    session_factory = _db_session_factory()
+    async with session_factory() as session:
+        async with session.begin():
+            job = await get_job(session, job_id)
+            if job:
+                await set_status_message_id(session, job, message_id)
+
+
+async def _mark_enqueue_failed_and_refund(job_id: uuid.UUID, error_message: str) -> None:
+    session_factory = _db_session_factory()
+    async with session_factory() as session:
+        async with session.begin():
+            job = await get_job(session, job_id)
+            if job is None or job.status in {"completed", "failed", "cancelled"}:
+                return
+            if job.credits_charged > 0:
+                await add_credits(
+                    session,
+                    user_id=job.user_id,
+                    amount=job.credits_charged,
+                    reason="enqueue_failed_refund",
+                    source="bot",
+                    related_job_id=job.id,
+                )
+                await mark_refunded(session, job)
+            await mark_failed(session, job, error_message)
+
+
+async def _refresh_queue_positions(bot: Bot) -> None:
+    session_factory = _db_session_factory()
+    async with session_factory() as session:
+        queued_jobs = await list_queued_jobs(session)
+
+    for position, job in enumerate(queued_jobs, start=1):
+        if job.telegram_status_message_id is None:
+            continue
+        try:
+            await bot.edit_message_text(
+                chat_id=job.telegram_chat_id,
+                message_id=job.telegram_status_message_id,
+                text=_queue_position_text(position),
+            )
+        except Exception:
+            logger.exception("Failed to refresh queue status message: job_id=%s", job.id)
+
+
+async def _cancel_latest_active_job(message: Message) -> tuple[bool, int, str, int | None, int | None]:
+    session_factory = _db_session_factory()
+    telegram_user_id = _user_id(message)
+    async with session_factory() as session:
+        async with session.begin():
+            user = await get_or_create_user(
+                session,
+                telegram_user_id=telegram_user_id,
+                telegram_username=message.from_user.username if message.from_user else None,
+                first_name=message.from_user.first_name if message.from_user else None,
+                last_name=message.from_user.last_name if message.from_user else None,
+            )
+            job = await get_latest_active_job_for_telegram_user(session, telegram_user_id=telegram_user_id)
+            if job is None:
+                balance_value = await get_balance(session, user_id=user.id)
+                return False, balance_value, "Активного монтажа для отмены нет", None, None
+
+            if job.status != "queued":
+                balance_value = await get_balance(session, user_id=user.id)
+                return (
+                    False,
+                    balance_value,
+                    "Видео уже отправлено на монтаж, отменить сейчас нельзя",
+                    None,
+                    None,
+                )
+
+            if job.credits_charged > 0:
+                await add_credits(
+                    session,
+                    user_id=job.user_id,
+                    amount=job.credits_charged,
+                    reason="render_cancelled_refund",
+                    source="bot",
+                    related_job_id=job.id,
+                )
+                await mark_refunded(session, job)
+            await mark_cancelled(session, job)
+            balance_value = await get_balance(session, user_id=user.id)
+            return True, balance_value, "Монтаж отменен", job.telegram_chat_id, job.telegram_status_message_id
 
 
 async def _mark_pending_cancelled(pending: PendingVideo) -> None:
@@ -919,6 +1054,18 @@ def _menu_keyboard() -> InlineKeyboardMarkup:
         + [
             [InlineKeyboardButton(text="Начать монтаж", callback_data=START_MONTAGE_CALLBACK)],
         ]
+    )
+
+
+def _queue_position_text(position: int) -> str:
+    return f"Вы {position} в очереди"
+
+
+def _cancel_montage_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=CANCEL_MONTAGE_TEXT)]],
+        resize_keyboard=True,
+        one_time_keyboard=False,
     )
 
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
-from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 from arq.connections import RedisSettings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -17,7 +17,15 @@ from app.config import Config, load_config
 from app.db import create_engine, create_session_factory
 from app.queue import redis_settings
 from app.repositories.credits import add_credits
-from app.repositories.video_jobs import get_job, mark_completed, mark_failed, mark_processing, mark_refunded
+from app.repositories.video_jobs import (
+    get_job,
+    list_queued_jobs,
+    mark_completed,
+    mark_failed,
+    mark_processing,
+    mark_refunded,
+    set_status_message_id,
+)
 from app.subtitles import write_ass_subtitles
 from app.transcriber import TranscriptionError, extract_audio, transcribe_audio
 from app.video_processor import (
@@ -49,7 +57,27 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
             if job is None:
                 logger.warning("Render job not found: job_id=%s", job_id)
                 return
+            if job.status == "cancelled":
+                logger.info("Render job was cancelled before processing: job_id=%s", job_id)
+                await _refresh_queue_positions(bot=bot, session=session)
+                return
+            if job.status != "queued":
+                logger.info("Render job is not queued, skipping: job_id=%s status=%s", job_id, job.status)
+                return
             await mark_processing(session, job)
+            status_chat_id = job.telegram_chat_id
+            status_message_id = job.telegram_status_message_id
+
+    await _replace_queue_status_with_processing_message(
+        bot=bot,
+        session_factory=session_factory,
+        job_id=job_uuid,
+        chat_id=status_chat_id,
+        old_message_id=status_message_id,
+    )
+
+    async with session_factory() as session:
+        await _refresh_queue_positions(bot=bot, session=session)
 
     try:
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -93,6 +121,13 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
             strip_metadata=settings.strip_metadata if settings else True,
         )
 
+        await _edit_status_message(
+            bot=bot,
+            chat_id=job.telegram_chat_id,
+            message_id=job.telegram_status_message_id,
+            text="Видео смонтировано отправляем вам",
+        )
+
         output_width, output_height = VIDEO_FORMATS.get(output_format, (WIDTH, HEIGHT))
         await _send_ready_video(
             bot=bot,
@@ -100,6 +135,13 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
             output_path=output_path,
             output_width=output_width,
             output_height=output_height,
+        )
+
+        await _edit_status_message(
+            bot=bot,
+            chat_id=job.telegram_chat_id,
+            message_id=job.telegram_status_message_id,
+            text="Готово",
         )
 
         async with session_factory() as session:
@@ -215,6 +257,64 @@ async def _download_ad_banner(bot: Bot, job, job_dir: Path) -> Path | None:
     return banner_path
 
 
+async def _edit_status_message(
+    *,
+    bot: Bot,
+    chat_id: int,
+    message_id: int | None,
+    text: str,
+) -> None:
+    if message_id is None:
+        return
+
+    try:
+        await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
+    except Exception:
+        logger.exception("Failed to edit render status message: chat_id=%s message_id=%s", chat_id, message_id)
+
+
+async def _replace_queue_status_with_processing_message(
+    *,
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    job_id: uuid.UUID,
+    chat_id: int,
+    old_message_id: int | None,
+) -> None:
+    if old_message_id is not None:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=old_message_id)
+        except Exception:
+            logger.exception("Failed to delete queue status message: chat_id=%s message_id=%s", chat_id, old_message_id)
+
+    try:
+        message = await bot.send_message(
+            chat_id=chat_id,
+            text="Отправили видео на монтаж",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+    except Exception:
+        logger.exception("Failed to send processing status message: job_id=%s", job_id)
+        return
+
+    async with session_factory() as session:
+        async with session.begin():
+            job = await get_job(session, job_id)
+            if job:
+                await set_status_message_id(session, job, message.message_id)
+
+
+async def _refresh_queue_positions(*, bot: Bot, session: AsyncSession) -> None:
+    queued_jobs = await list_queued_jobs(session)
+    for position, queued_job in enumerate(queued_jobs, start=1):
+        await _edit_status_message(
+            bot=bot,
+            chat_id=queued_job.telegram_chat_id,
+            message_id=queued_job.telegram_status_message_id,
+            text=f"Вы {position} в очереди",
+        )
+
+
 async def _send_ready_video(
     *,
     bot: Bot,
@@ -225,11 +325,6 @@ async def _send_ready_video(
 ) -> None:
     file_size_mb = output_path.stat().st_size / 1024 / 1024
     logger.info("Sending rendered video: path=%s size=%.2fMB", output_path, file_size_mb)
-
-    try:
-        await bot.send_message(chat_id=chat_id, text="Видео смонтировано, отправляю файл в Telegram...")
-    except Exception:
-        logger.exception("Failed to send upload status message")
 
     try:
         await asyncio.wait_for(

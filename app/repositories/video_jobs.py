@@ -3,11 +3,11 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import VideoJob, VideoJobSettings
+from app.models import User, VideoJob, VideoJobSettings
 
 
 async def create_draft_job(
@@ -66,3 +66,52 @@ async def mark_failed(session: AsyncSession, job: VideoJob, error_message: str) 
 
 async def mark_refunded(session: AsyncSession, job: VideoJob) -> None:
     job.credits_charged = 0
+
+
+async def set_status_message_id(session: AsyncSession, job: VideoJob, message_id: int) -> None:
+    job.telegram_status_message_id = message_id
+
+
+async def get_queue_position(session: AsyncSession, job: VideoJob) -> int:
+    if job.queued_at is None:
+        return 1
+
+    result = await session.execute(
+        select(func.count(VideoJob.id)).where(
+            VideoJob.status == "queued",
+            VideoJob.queued_at <= job.queued_at,
+        )
+    )
+    return int(result.scalar_one() or 1)
+
+
+async def list_queued_jobs(session: AsyncSession) -> list[VideoJob]:
+    result = await session.execute(
+        select(VideoJob)
+        .where(VideoJob.status == "queued")
+        .order_by(VideoJob.queued_at.asc(), VideoJob.created_at.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def get_latest_active_job_for_telegram_user(
+    session: AsyncSession,
+    *,
+    telegram_user_id: int,
+) -> VideoJob | None:
+    result = await session.execute(
+        select(VideoJob)
+        .join(User, User.id == VideoJob.user_id)
+        .where(
+            User.telegram_user_id == telegram_user_id,
+            VideoJob.status.in_(("queued", "processing")),
+        )
+        .order_by(VideoJob.created_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def mark_cancelled(session: AsyncSession, job: VideoJob) -> None:
+    job.status = "cancelled"
+    job.finished_at = datetime.now(UTC)

@@ -79,6 +79,7 @@ class VideoJob(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(Text, nullable=False, default="draft", server_default="draft")
     telegram_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    telegram_status_message_id: Mapped[int | None] = mapped_column(BigInteger)
     telegram_video_file_id: Mapped[str | None] = mapped_column(Text)
     telegram_video_file_unique_id: Mapped[str | None] = mapped_column(Text)
     ad_content_type: Mapped[str] = mapped_column(Text, nullable=False, default="none", server_default="none")
