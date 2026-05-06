@@ -1,28 +1,151 @@
 from __future__ import annotations
 
 import logging
+import shutil
+import uuid
+from pathlib import Path
 
+from aiogram import Bot
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
+from aiogram.types import FSInputFile
 from arq.connections import RedisSettings
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.config import load_config
+from app.config import Config, load_config
+from app.db import create_engine, create_session_factory
 from app.queue import redis_settings
+from app.repositories.video_jobs import get_job, mark_completed, mark_failed, mark_processing
+from app.subtitles import write_ass_subtitles
+from app.transcriber import TranscriptionError, extract_audio, transcribe_audio
+from app.video_processor import (
+    HEIGHT,
+    VIDEO_FORMATS,
+    VideoProcessingError,
+    WIDTH,
+    ensure_ffmpeg_available,
+    process_video,
+)
 
 logger = logging.getLogger(__name__)
 
 
 async def render_video(ctx: dict, job_id: str) -> None:
-    # The next implementation step will move the current in-process montage flow here.
+    config: Config = ctx["config"]
+    bot: Bot = ctx["bot"]
+    session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]
+    job_uuid = uuid.UUID(job_id)
+    job_dir = config.tmp_dir / job_id
+
     logger.info("Received render job: job_id=%s", job_id)
+
+    async with session_factory() as session:
+        async with session.begin():
+            job = await get_job(session, job_uuid)
+            if job is None:
+                logger.warning("Render job not found: job_id=%s", job_id)
+                return
+            await mark_processing(session, job)
+
+    try:
+        job_dir.mkdir(parents=True, exist_ok=True)
+        input_path = job_dir / "input.mp4"
+        audio_path = job_dir / "audio.mp3"
+        subtitles_path = job_dir / "subtitles.ass"
+        output_path = job_dir / "output.mp4"
+
+        async with session_factory() as session:
+            job = await get_job(session, job_uuid)
+            if job is None:
+                raise VideoProcessingError("Video job was not found")
+
+        if not job.telegram_video_file_id:
+            raise VideoProcessingError("Telegram video file_id is missing")
+
+        await _download_telegram_file(bot, file_id=job.telegram_video_file_id, destination=input_path)
+        ad_banner_path = await _download_ad_banner(bot, job, job_dir)
+
+        settings = job.settings
+        subtitles_file = await _create_subtitles_file(
+            config=config,
+            input_path=input_path,
+            audio_path=audio_path,
+            subtitles_path=subtitles_path,
+            subtitle_font=settings.subtitle_font if settings else "DejaVu Sans",
+            subtitle_color=settings.subtitle_color if settings else "white",
+        )
+
+        output_format = settings.video_format if settings else "9:16"
+        await process_video(
+            input_path=input_path,
+            output_path=output_path,
+            ad_text=job.ad_text if job.ad_content_type == "text" else None,
+            ad_banner_path=ad_banner_path,
+            subtitles_path=subtitles_file,
+            output_format=output_format,
+            fill_color=settings.fill_color if settings else "black",
+            video_speed=float(settings.video_speed) if settings else 1.0,
+            mirror=settings.mirror if settings else False,
+            strip_metadata=settings.strip_metadata if settings else True,
+        )
+
+        output_width, output_height = VIDEO_FORMATS.get(output_format, (WIDTH, HEIGHT))
+        await bot.send_video(
+            chat_id=job.telegram_chat_id,
+            video=FSInputFile(output_path),
+            width=output_width,
+            height=output_height,
+            caption="Готово",
+        )
+
+        async with session_factory() as session:
+            async with session.begin():
+                finished_job = await get_job(session, job_uuid)
+                if finished_job:
+                    await mark_completed(session, finished_job)
+    except Exception as exc:
+        logger.exception("Render job failed: job_id=%s", job_id)
+        failed_chat_id = None
+        async with session_factory() as session:
+            async with session.begin():
+                failed_job = await get_job(session, job_uuid)
+                if failed_job:
+                    await mark_failed(session, failed_job, str(exc))
+                    failed_chat_id = failed_job.telegram_chat_id
+        if failed_chat_id is not None:
+            try:
+                await bot.send_message(
+                    chat_id=failed_chat_id,
+                    text="Ошибка: не удалось смонтировать видео. Попробуйте отправить файл заново.",
+                )
+            except Exception:
+                logger.exception("Failed to send render failure message: job_id=%s", job_id)
+    finally:
+        shutil.rmtree(job_dir, ignore_errors=True)
 
 
 async def startup(ctx: dict) -> None:
     config = load_config()
+    ensure_ffmpeg_available()
+    engine = create_engine(config)
+    session_factory = create_session_factory(engine)
+    bot = _create_bot(config)
+
     ctx["config"] = config
+    ctx["engine"] = engine
+    ctx["session_factory"] = session_factory
+    ctx["bot"] = bot
     config.tmp_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Worker started")
 
 
 async def shutdown(ctx: dict) -> None:
+    bot: Bot | None = ctx.get("bot")
+    engine = ctx.get("engine")
+    if bot:
+        await bot.session.close()
+    if engine:
+        await engine.dispose()
     logger.info("Worker stopped")
 
 
@@ -34,6 +157,79 @@ class WorkerSettings:
     on_shutdown = shutdown
     job_timeout = config.render_job_timeout_seconds
     max_jobs = config.max_concurrent_renders
+
+
+def _create_bot(config: Config) -> Bot:
+    session = _create_session(config)
+    return Bot(token=config.bot_token, session=session) if session else Bot(token=config.bot_token)
+
+
+def _create_session(config: Config) -> AiohttpSession | None:
+    if not config.telegram_api_base:
+        return None
+
+    api = TelegramAPIServer.from_base(
+        config.telegram_api_base,
+        is_local=config.telegram_api_is_local,
+    )
+    return AiohttpSession(api=api)
+
+
+async def _download_telegram_file(bot: Bot, *, file_id: str, destination: Path) -> None:
+    telegram_file = await bot.get_file(file_id)
+    if not telegram_file.file_path:
+        raise VideoProcessingError("Telegram did not return file_path")
+
+    await bot.download_file(telegram_file.file_path, destination=destination)
+
+
+async def _download_ad_banner(bot: Bot, job, job_dir: Path) -> Path | None:
+    if job.ad_content_type != "banner" or not job.ad_banner_file_id:
+        return None
+
+    suffix = Path(job.ad_banner_name or "").suffix.casefold()
+    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+        suffix = ".jpg"
+
+    banner_path = job_dir / f"banner{suffix}"
+    await _download_telegram_file(bot, file_id=job.ad_banner_file_id, destination=banner_path)
+    return banner_path
+
+
+async def _create_subtitles_file(
+    *,
+    config: Config,
+    input_path: Path,
+    audio_path: Path,
+    subtitles_path: Path,
+    subtitle_font: str,
+    subtitle_color: str,
+) -> Path | None:
+    if not config.openai_api_key:
+        logger.warning("OPENAI_API_KEY is not set. Video will be processed without subtitles.")
+        return None
+
+    try:
+        await extract_audio(input_path=input_path, output_path=audio_path)
+        segments = await transcribe_audio(audio_path=audio_path, api_key=config.openai_api_key)
+    except TranscriptionError:
+        logger.exception("Transcription failed")
+        return None
+    except Exception:
+        logger.exception("Unexpected transcription error")
+        return None
+
+    if not segments:
+        logger.info("Transcription returned no subtitle segments")
+        return None
+
+    write_ass_subtitles(
+        segments=segments,
+        output_path=subtitles_path,
+        font_name=subtitle_font,
+        font_color=subtitle_color,
+    )
+    return subtitles_path
 
 
 if __name__ == "__main__":

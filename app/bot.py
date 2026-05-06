@@ -12,24 +12,24 @@ from aiogram.filters import Command
 from aiogram.filters import CommandStart
 from aiogram.types import (
     CallbackQuery,
-    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
     ReplyKeyboardRemove,
 )
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.config import Config, load_config
-from app.subtitles import write_ass_subtitles
-from app.transcriber import TranscriptionError, extract_audio, transcribe_audio
+from app.db import create_engine, create_session_factory
+from app.models import VideoJobSettings
+from app.queue import enqueue_render_job
+from app.repositories.users import get_or_create_user
+from app.repositories.video_jobs import create_draft_job, get_job, mark_queued
 from app.video_processor import (
     FFmpegNotFoundError,
-    HEIGHT,
     VIDEO_FORMATS,
     VideoProcessingError,
-    WIDTH,
     ensure_ffmpeg_available,
-    process_video,
 )
 
 
@@ -88,21 +88,22 @@ class MontageSettings:
 
 @dataclass
 class PendingVideo:
-    input_path: Path
-    audio_path: Path
-    subtitles_path: Path
-    output_path: Path
+    job_id: uuid.UUID
+    telegram_video_file_id: str
+    telegram_video_file_unique_id: str | None = None
     video_count: int = 1
     settings: MontageSettings = field(default_factory=MontageSettings)
     ad_text: str | None = None
-    ad_banner_path: Path | None = None
+    ad_banner_file_id: str | None = None
+    ad_banner_file_unique_id: str | None = None
     ad_banner_name: str | None = None
-    cleanup_ad_banner: bool = False
     ready_for_montage: bool = False
 
 
 pending_videos: dict[int, PendingVideo] = {}
 app_config: Config | None = None
+db_engine: AsyncEngine | None = None
+db_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 dp = Dispatcher()
@@ -154,9 +155,9 @@ async def set_ad_text(message: Message) -> None:
     await message.answer("Рекламный контент обрабатывается", reply_markup=ReplyKeyboardRemove())
     await message.answer("Рекламный контент обработан")
     pending.ad_text = text
-    pending.ad_banner_path = None
+    pending.ad_banner_file_id = None
+    pending.ad_banner_file_unique_id = None
     pending.ad_banner_name = None
-    pending.cleanup_ad_banner = False
     pending.ready_for_montage = True
     await _send_montage_settings(message, pending)
 
@@ -166,9 +167,7 @@ async def clear_ad(message: Message) -> None:
     user_id = _user_id(message)
     pending = pending_videos.pop(user_id, None)
     if pending:
-        _cleanup_pending(pending)
-        if pending.cleanup_ad_banner and pending.ad_banner_path:
-            pending.ad_banner_path.unlink(missing_ok=True)
+        await _mark_pending_cancelled(pending)
         await message.answer("Текущая обработка отменена.", reply_markup=ReplyKeyboardRemove())
         return
 
@@ -227,21 +226,13 @@ async def _handle_ad_banner_file(
         await message.answer("Сначала отправь видео, а потом рекламный текст или баннер для него.")
         return
 
-    banner_path = pending.input_path.with_name(f"{pending.input_path.stem}_banner{suffix}")
-
-    telegram_file = await bot.get_file(file_id)
-    if not telegram_file.file_path:
-        await message.answer("Ошибка: не удалось скачать баннер. Попробуй другую картинку.")
-        return
-
     await message.answer("Рекламный контент обрабатывается", reply_markup=ReplyKeyboardRemove())
-    await bot.download_file(telegram_file.file_path, destination=banner_path)
 
     await message.answer("Рекламный контент обработан")
     pending.ad_text = None
-    pending.ad_banner_path = banner_path
-    pending.ad_banner_name = display_name or banner_path.name
-    pending.cleanup_ad_banner = True
+    pending.ad_banner_file_id = file_id
+    pending.ad_banner_file_unique_id = None
+    pending.ad_banner_name = display_name or f"banner{suffix}"
     pending.ready_for_montage = True
     await _send_montage_settings(message, pending)
 
@@ -254,30 +245,19 @@ async def handle_video(message: Message, bot: Bot) -> None:
         await message.answer(f"Ошибка: видео слишком большое. Максимальный размер сейчас — {MAX_VIDEO_SIZE_MB} МБ.")
         return
 
-    job_id = uuid.uuid4().hex
-    input_path = TMP_DIR / f"{job_id}_input.mp4"
-    audio_path = TMP_DIR / f"{job_id}_audio.mp3"
-    subtitles_path = TMP_DIR / f"{job_id}_subtitles.ass"
-    output_path = TMP_DIR / f"{job_id}_output.mp4"
-
     user_id = _user_id(message)
     old_pending = pending_videos.pop(user_id, None)
     if old_pending:
-        _cleanup_pending(old_pending)
+        await _mark_pending_cancelled(old_pending)
 
     try:
-        telegram_file = await bot.get_file(video.file_id)
-        if not telegram_file.file_path:
-            raise VideoProcessingError("Telegram did not return file_path for video")
-
-        await bot.download_file(telegram_file.file_path, destination=input_path)
-
-        pending_videos[user_id] = PendingVideo(
-            input_path=input_path,
-            audio_path=audio_path,
-            subtitles_path=subtitles_path,
-            output_path=output_path,
+        job = await _create_pending_job(message, video.file_id, video.file_unique_id)
+        pending = PendingVideo(
+            job_id=job.id,
+            telegram_video_file_id=video.file_id,
+            telegram_video_file_unique_id=video.file_unique_id,
         )
+        pending_videos[user_id] = pending
 
         await message.answer(
             "Видео принято 👌\n\n"
@@ -290,11 +270,9 @@ async def handle_video(message: Message, bot: Bot) -> None:
     except VideoProcessingError as exc:
         logger.exception("Video preparation failed for message_id=%s", message.message_id)
         await message.answer(f"Ошибка: не удалось принять видео. {exc}")
-        input_path.unlink(missing_ok=True)
     except Exception as exc:
         logger.exception("Unexpected error while preparing video message_id=%s", message.message_id)
         await message.answer(f"Ошибка: не удалось принять видео. {exc}")
-        input_path.unlink(missing_ok=True)
 
 
 @dp.message(F.text)
@@ -312,9 +290,9 @@ async def handle_ad_text(message: Message) -> None:
     if text.casefold() == NO_CONTENT_TEXT.casefold():
         await message.answer("Видео будет без рекламного контента", reply_markup=ReplyKeyboardRemove())
         pending.ad_text = None
-        pending.ad_banner_path = None
+        pending.ad_banner_file_id = None
+        pending.ad_banner_file_unique_id = None
         pending.ad_banner_name = None
-        pending.cleanup_ad_banner = False
         pending.ready_for_montage = True
         await _send_montage_settings(message, pending)
         return
@@ -326,9 +304,9 @@ async def handle_ad_text(message: Message) -> None:
     await message.answer("Рекламный контент обрабатывается", reply_markup=ReplyKeyboardRemove())
     await message.answer("Рекламный контент обработан")
     pending.ad_text = text
-    pending.ad_banner_path = None
+    pending.ad_banner_file_id = None
+    pending.ad_banner_file_unique_id = None
     pending.ad_banner_name = None
-    pending.cleanup_ad_banner = False
     pending.ready_for_montage = True
     await _send_montage_settings(message, pending)
 
@@ -351,9 +329,9 @@ async def handle_no_content_callback(callback: CallbackQuery) -> None:
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer("Видео будет без рекламного контента")
     pending.ad_text = None
-    pending.ad_banner_path = None
+    pending.ad_banner_file_id = None
+    pending.ad_banner_file_unique_id = None
     pending.ad_banner_name = None
-    pending.cleanup_ad_banner = False
     pending.ready_for_montage = True
     await _send_montage_settings(callback.message, pending)
     await callback.answer()
@@ -443,10 +421,12 @@ async def handle_other(message: Message) -> None:
 
 
 async def main() -> None:
-    global app_config
+    global app_config, db_engine, db_session_factory
 
     config = load_config()
     app_config = config
+    db_engine = create_engine(config)
+    db_session_factory = create_session_factory(db_engine)
 
     try:
         ensure_ffmpeg_available()
@@ -610,44 +590,10 @@ def _decode_speed_callback(value: str) -> float:
 def _ad_content_label(pending: PendingVideo) -> str:
     if pending.ad_text is not None:
         return f"«{pending.ad_text}»"
-    if pending.ad_banner_path is not None:
-        return pending.ad_banner_name or pending.ad_banner_path.name
+    if pending.ad_banner_file_id is not None:
+        return pending.ad_banner_name or "banner"
 
     return "нет"
-
-
-async def _create_subtitles_file(
-    input_path: Path,
-    audio_path: Path,
-    subtitles_path: Path,
-    subtitle_font: str = DEFAULT_SUBTITLE_FONT,
-    subtitle_color: str = DEFAULT_SUBTITLE_COLOR,
-) -> Path | None:
-    if not app_config or not app_config.openai_api_key:
-        logger.warning("OPENAI_API_KEY is not set. Video will be processed without subtitles.")
-        return None
-
-    try:
-        await extract_audio(input_path=input_path, output_path=audio_path)
-        segments = await transcribe_audio(audio_path=audio_path, api_key=app_config.openai_api_key)
-    except TranscriptionError:
-        logger.exception("Transcription failed")
-        return None
-    except Exception:
-        logger.exception("Unexpected transcription error")
-        return None
-
-    if not segments:
-        logger.info("Transcription returned no subtitle segments")
-        return None
-
-    write_ass_subtitles(
-        segments=segments,
-        output_path=subtitles_path,
-        font_name=subtitle_font,
-        font_color=subtitle_color,
-    )
-    return subtitles_path
 
 
 async def _process_pending_video(
@@ -657,54 +603,108 @@ async def _process_pending_video(
 ) -> None:
     pending_videos.pop(user_id, None)
 
-    await message.answer("Начал монтировать видео")
-
     try:
-        subtitles_file = await _create_subtitles_file(
-            input_path=pending.input_path,
-            audio_path=pending.audio_path,
-            subtitles_path=pending.subtitles_path,
-            subtitle_font=pending.settings.subtitle_font,
-            subtitle_color=pending.settings.subtitle_color,
-        )
-
-        await process_video(
-            input_path=pending.input_path,
-            output_path=pending.output_path,
-            ad_text=pending.ad_text,
-            ad_banner_path=pending.ad_banner_path,
-            subtitles_path=subtitles_file,
-            output_format=pending.settings.video_format,
-            fill_color=pending.settings.fill_color,
-            video_speed=pending.settings.video_speed,
-            mirror=pending.settings.mirror,
-            strip_metadata=pending.settings.strip_metadata,
-        )
-
-        output_width, output_height = VIDEO_FORMATS.get(pending.settings.video_format, (WIDTH, HEIGHT))
-        await message.answer_video(
-            video=FSInputFile(pending.output_path),
-            width=output_width,
-            height=output_height,
-            caption="Готово",
-        )
-    except VideoProcessingError as exc:
-        logger.exception("Video processing failed for message_id=%s", message.message_id)
-        await message.answer(f"Ошибка: не удалось смонтировать видео. {exc}")
+        await _persist_and_enqueue_pending(pending)
+        await message.answer("Видео поставлено в очередь на монтаж")
     except Exception as exc:
-        logger.exception("Unexpected error while processing pending video")
-        await message.answer(f"Ошибка: не удалось смонтировать видео. {exc}")
-    finally:
-        _cleanup_pending(pending)
-        if pending.cleanup_ad_banner and pending.ad_banner_path:
-            pending.ad_banner_path.unlink(missing_ok=True)
+        logger.exception("Failed to enqueue render job: job_id=%s", pending.job_id)
+        await message.answer(f"Ошибка: не удалось поставить видео в очередь. {exc}")
 
 
-def _cleanup_pending(pending: PendingVideo) -> None:
-    pending.input_path.unlink(missing_ok=True)
-    pending.audio_path.unlink(missing_ok=True)
-    pending.subtitles_path.unlink(missing_ok=True)
-    pending.output_path.unlink(missing_ok=True)
+async def _create_pending_job(
+    message: Message,
+    telegram_video_file_id: str,
+    telegram_video_file_unique_id: str | None,
+):
+    session_factory = _db_session_factory()
+    telegram_user = message.from_user
+    async with session_factory() as session:
+        async with session.begin():
+            user = await get_or_create_user(
+                session,
+                telegram_user_id=_user_id(message),
+                telegram_username=telegram_user.username if telegram_user else None,
+                first_name=telegram_user.first_name if telegram_user else None,
+                last_name=telegram_user.last_name if telegram_user else None,
+            )
+            return await create_draft_job(
+                session,
+                user_id=user.id,
+                telegram_chat_id=message.chat.id,
+                telegram_message_id=message.message_id,
+                telegram_video_file_id=telegram_video_file_id,
+                telegram_video_file_unique_id=telegram_video_file_unique_id,
+            )
+
+
+async def _persist_and_enqueue_pending(pending: PendingVideo) -> None:
+    session_factory = _db_session_factory()
+    async with session_factory() as session:
+        async with session.begin():
+            job = await get_job(session, pending.job_id)
+            if job is None:
+                raise VideoProcessingError("Video job was not found")
+
+            job.ad_content_type = _ad_content_type(pending)
+            job.ad_text = pending.ad_text
+            job.ad_banner_file_id = pending.ad_banner_file_id
+            job.ad_banner_file_unique_id = pending.ad_banner_file_unique_id
+            job.ad_banner_name = pending.ad_banner_name
+
+            if job.settings is None:
+                job.settings = VideoJobSettings(job_id=job.id)
+
+            _copy_pending_settings(pending, job.settings)
+            await mark_queued(session, job, credits_charged=0)
+
+    await enqueue_render_job(_app_config(), str(pending.job_id))
+
+
+async def _mark_pending_cancelled(pending: PendingVideo) -> None:
+    try:
+        session_factory = _db_session_factory()
+    except RuntimeError:
+        return
+
+    async with session_factory() as session:
+        async with session.begin():
+            job = await get_job(session, pending.job_id)
+            if job and job.status == "draft":
+                job.status = "cancelled"
+
+
+def _copy_pending_settings(pending: PendingVideo, settings: VideoJobSettings) -> None:
+    settings.video_count = pending.video_count
+    settings.video_format = pending.settings.video_format
+    settings.fill_color = pending.settings.fill_color
+    settings.subtitle_font = pending.settings.subtitle_font
+    settings.subtitle_color = pending.settings.subtitle_color
+    settings.video_speed = pending.settings.video_speed
+    settings.mirror = pending.settings.mirror
+    settings.strip_metadata = pending.settings.strip_metadata
+
+
+def _ad_content_type(pending: PendingVideo) -> str:
+    if pending.ad_text is not None:
+        return "text"
+    if pending.ad_banner_file_id is not None:
+        return "banner"
+
+    return "none"
+
+
+def _app_config() -> Config:
+    if app_config is None:
+        raise RuntimeError("App config is not initialized")
+
+    return app_config
+
+
+def _db_session_factory() -> async_sessionmaker[AsyncSession]:
+    if db_session_factory is None:
+        raise RuntimeError("Database session factory is not initialized")
+
+    return db_session_factory
 
 
 def _command_payload(text: str) -> str:

@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models import VideoJob, VideoJobSettings
 
@@ -33,7 +34,9 @@ async def create_draft_job(
 
 async def get_job(session: AsyncSession, job_id: uuid.UUID) -> VideoJob | None:
     result = await session.execute(
-        select(VideoJob).where(VideoJob.id == job_id)
+        select(VideoJob)
+        .options(selectinload(VideoJob.settings))
+        .where(VideoJob.id == job_id)
     )
     return result.scalar_one_or_none()
 
