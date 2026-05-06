@@ -49,6 +49,7 @@ NO_CONTENT_TEXT = "Без контента"
 NEW_VIDEO_CALLBACK = "flow:new_video"
 START_MONTAGE_CALLBACK = "flow:start_montage"
 MENU_CALLBACK = "flow:menu"
+TOP_UP_CALLBACK = "billing:top_up"
 MAX_AD_TEXT_CHARS = 60
 INTRO_BONUS_VIDEOS = 3
 RENDER_COST_VIDEOS = 1
@@ -154,12 +155,13 @@ async def start(message: Message) -> None:
 @dp.message(Command("balance"))
 async def balance(message: Message) -> None:
     balance_value = await _user_video_balance(message)
-    await message.answer(f"На вашем счете: {balance_value} видео")
+    await message.answer(_menu_text(balance_value), reply_markup=_menu_keyboard())
 
 
 @dp.message(Command("buy"))
 async def buy(message: Message) -> None:
-    await message.answer(_tariffs_text())
+    balance_value = await _user_video_balance(message)
+    await message.answer(_menu_text(balance_value), reply_markup=_menu_keyboard())
 
 
 @dp.message(Command("ad"))
@@ -393,11 +395,17 @@ async def handle_menu_callback(callback: CallbackQuery) -> None:
 
     if callback.message:
         balance_value = await _user_video_balance_from_telegram_user(callback.from_user)
-        await callback.message.answer(
-            f"На вашем счете: {balance_value} видео\n\n"
-            f"{_tariffs_text()}"
-        )
+        await callback.message.answer(_menu_text(balance_value), reply_markup=_menu_keyboard())
     await callback.answer()
+
+
+@dp.callback_query(F.data == TOP_UP_CALLBACK)
+async def handle_top_up_callback(callback: CallbackQuery) -> None:
+    if not _is_allowed_callback(callback):
+        await callback.answer("на этапе разработки", show_alert=True)
+        return
+
+    await callback.answer("Скоро здесь будет ссылка на оплату", show_alert=True)
 
 
 @dp.callback_query(F.data.startswith("settings:"))
@@ -678,7 +686,8 @@ async def _process_pending_video(
         await message.answer(
             "Недостаточно видео на счете.\n\n"
             "Пополните баланс, чтобы отправить ролик в монтаж.\n\n"
-            f"{_tariffs_text()}"
+            f"{_tariffs_text()}",
+            reply_markup=_menu_keyboard(),
         )
     except Exception as exc:
         logger.exception("Failed to enqueue render job: job_id=%s", pending.job_id)
@@ -874,6 +883,13 @@ def _tariffs_text() -> str:
     return "\n".join(lines)
 
 
+def _menu_text(balance_value: int) -> str:
+    return (
+        f"На вашем счете: {balance_value} видео\n\n"
+        f"{_tariffs_text()}"
+    )
+
+
 def _start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -881,6 +897,15 @@ def _start_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Меню", callback_data=MENU_CALLBACK),
                 InlineKeyboardButton(text="Начать монтаж", callback_data=START_MONTAGE_CALLBACK),
             ],
+        ]
+    )
+
+
+def _menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Пополнить", callback_data=TOP_UP_CALLBACK)],
+            [InlineKeyboardButton(text="Начать монтаж", callback_data=START_MONTAGE_CALLBACK)],
         ]
     )
 
