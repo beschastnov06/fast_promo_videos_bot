@@ -29,10 +29,6 @@ def redis_settings(config: Config) -> RedisSettings:
 async def enqueue_render_job(config: Config, job_id: str) -> None:
     redis = await create_pool(redis_settings(config))
     try:
-        await redis.enqueue_job(
-            RENDER_VIDEO_JOB,
-            job_id,
-            _job_timeout=config.render_job_timeout_seconds,
-        )
+        await redis.enqueue_job(RENDER_VIDEO_JOB, job_id)
     finally:
         await redis.close()

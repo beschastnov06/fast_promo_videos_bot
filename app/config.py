@@ -37,7 +37,7 @@ def load_config() -> Config:
         redis_url=os.getenv("REDIS_URL"),
         tmp_dir=Path(os.getenv("TMP_DIR", "tmp")),
         max_concurrent_renders=_parse_int(os.getenv("MAX_CONCURRENT_RENDERS"), default=1, minimum=1),
-        render_job_timeout_seconds=_parse_int(os.getenv("RENDER_JOB_TIMEOUT_SECONDS"), default=900, minimum=60),
+        render_job_timeout_seconds=_parse_int(os.getenv("RENDER_JOB_TIMEOUT_SECONDS"), default=900, minimum=900),
         telegram_request_timeout_seconds=_parse_int(
             os.getenv("TELEGRAM_REQUEST_TIMEOUT_SECONDS"),
             default=600,

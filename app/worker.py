@@ -30,7 +30,7 @@ from app.video_processor import (
 logger = logging.getLogger(__name__)
 
 
-async def render_video(ctx: dict, job_id: str) -> None:
+async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
     config: Config = ctx["config"]
     bot: Bot = ctx["bot"]
     session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]
