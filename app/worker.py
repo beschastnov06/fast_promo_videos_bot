@@ -136,7 +136,12 @@ async def startup(ctx: dict) -> None:
     ctx["session_factory"] = session_factory
     ctx["bot"] = bot
     config.tmp_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("Worker started")
+    logger.info(
+        "Worker started: render_job_timeout=%s telegram_request_timeout=%s max_jobs=%s",
+        config.render_job_timeout_seconds,
+        config.telegram_request_timeout_seconds,
+        config.max_concurrent_renders,
+    )
 
 
 async def shutdown(ctx: dict) -> None:
@@ -166,13 +171,13 @@ def _create_bot(config: Config) -> Bot:
 
 def _create_session(config: Config) -> AiohttpSession | None:
     if not config.telegram_api_base:
-        return None
+        return AiohttpSession(timeout=config.telegram_request_timeout_seconds)
 
     api = TelegramAPIServer.from_base(
         config.telegram_api_base,
         is_local=config.telegram_api_is_local,
     )
-    return AiohttpSession(api=api)
+    return AiohttpSession(api=api, timeout=config.telegram_request_timeout_seconds)
 
 
 async def _download_telegram_file(bot: Bot, *, file_id: str, destination: Path) -> None:

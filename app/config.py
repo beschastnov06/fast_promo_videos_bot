@@ -17,6 +17,7 @@ class Config:
     tmp_dir: Path
     max_concurrent_renders: int
     render_job_timeout_seconds: int
+    telegram_request_timeout_seconds: int
 
 
 def load_config() -> Config:
@@ -35,8 +36,13 @@ def load_config() -> Config:
         database_url=os.getenv("DATABASE_URL"),
         redis_url=os.getenv("REDIS_URL"),
         tmp_dir=Path(os.getenv("TMP_DIR", "tmp")),
-        max_concurrent_renders=_parse_int(os.getenv("MAX_CONCURRENT_RENDERS"), default=1),
-        render_job_timeout_seconds=_parse_int(os.getenv("RENDER_JOB_TIMEOUT_SECONDS"), default=900),
+        max_concurrent_renders=_parse_int(os.getenv("MAX_CONCURRENT_RENDERS"), default=1, minimum=1),
+        render_job_timeout_seconds=_parse_int(os.getenv("RENDER_JOB_TIMEOUT_SECONDS"), default=900, minimum=60),
+        telegram_request_timeout_seconds=_parse_int(
+            os.getenv("TELEGRAM_REQUEST_TIMEOUT_SECONDS"),
+            default=600,
+            minimum=60,
+        ),
     )
 
 
@@ -49,11 +55,16 @@ def _parse_usernames(value: str) -> frozenset[str]:
     return frozenset(usernames)
 
 
-def _parse_int(value: str | None, default: int) -> int:
+def _parse_int(value: str | None, default: int, minimum: int | None = None) -> int:
     if value is None or not value.strip():
         return default
 
     try:
-        return int(value)
+        parsed_value = int(value)
     except ValueError:
         return default
+
+    if minimum is not None:
+        return max(parsed_value, minimum)
+
+    return parsed_value

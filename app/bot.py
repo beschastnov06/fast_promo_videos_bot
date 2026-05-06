@@ -438,19 +438,23 @@ async def main() -> None:
 
     session = _create_session(config)
     bot = Bot(token=config.bot_token, session=session) if session else Bot(token=config.bot_token)
-    logger.info("Bot started")
+    logger.info(
+        "Bot started: render_job_timeout=%s telegram_request_timeout=%s",
+        config.render_job_timeout_seconds,
+        config.telegram_request_timeout_seconds,
+    )
     await dp.start_polling(bot)
 
 
 def _create_session(config: Config) -> AiohttpSession | None:
     if not config.telegram_api_base:
-        return None
+        return AiohttpSession(timeout=config.telegram_request_timeout_seconds)
 
     api = TelegramAPIServer.from_base(
         config.telegram_api_base,
         is_local=config.telegram_api_is_local,
     )
-    return AiohttpSession(api=api)
+    return AiohttpSession(api=api, timeout=config.telegram_request_timeout_seconds)
 
 
 async def _send_montage_settings(message: Message, pending: PendingVideo) -> None:
