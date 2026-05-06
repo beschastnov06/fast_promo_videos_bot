@@ -137,18 +137,18 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
             output_height=output_height,
         )
 
+        async with session_factory() as session:
+            async with session.begin():
+                finished_job = await get_job(session, job_uuid)
+                if finished_job:
+                    await mark_completed(session, finished_job)
+
         await _edit_status_message(
             bot=bot,
             chat_id=job.telegram_chat_id,
             message_id=job.telegram_status_message_id,
             text="Готово",
         )
-
-        async with session_factory() as session:
-            async with session.begin():
-                finished_job = await get_job(session, job_uuid)
-                if finished_job:
-                    await mark_completed(session, finished_job)
     except Exception as exc:
         logger.exception("Render job failed: job_id=%s", job_id)
         failed_chat_id = None

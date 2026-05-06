@@ -68,7 +68,6 @@ BUY_PACKAGE_CALLBACK_PREFIX = "billing:buy:"
 MAX_AD_TEXT_CHARS = 60
 INTRO_BONUS_VIDEOS = 3
 RENDER_COST_VIDEOS = 1
-ACTIVE_RENDER_GRACE_SECONDS = 300
 DEFAULT_VIDEO_FORMAT = "9:16"
 DEFAULT_FILL_COLOR = "black"
 DEFAULT_SUBTITLE_FONT = "DejaVu Sans"
@@ -924,7 +923,7 @@ async def _has_active_render_job(telegram_user_id: int) -> bool:
         if active_since.tzinfo is None:
             active_since = active_since.replace(tzinfo=UTC)
 
-        max_active_seconds = _app_config().render_job_timeout_seconds + ACTIVE_RENDER_GRACE_SECONDS
+        max_active_seconds = _app_config().render_job_timeout_seconds
         return (datetime.now(UTC) - active_since).total_seconds() <= max_active_seconds
 
 
