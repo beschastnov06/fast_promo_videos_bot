@@ -457,7 +457,7 @@ async def handle_change_ad_content_callback(callback: CallbackQuery) -> None:
     pending.ad_banner_file_unique_id = None
     pending.ad_banner_name = None
     pending.ready_for_montage = False
-    await callback.message.answer(_change_ad_content_text(), reply_markup=_ad_content_keyboard())
+    await callback.message.answer(_change_ad_content_text(), reply_markup=_change_ad_content_keyboard())
     await callback.answer()
 
 
@@ -1205,6 +1205,14 @@ def _ad_content_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text=NO_CONTENT_TEXT, callback_data="content:none")],
             [InlineKeyboardButton(text="Поменять видео", callback_data=CHANGE_VIDEO_CALLBACK)],
+        ]
+    )
+
+
+def _change_ad_content_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=NO_CONTENT_TEXT, callback_data="content:none")],
         ]
     )
 
