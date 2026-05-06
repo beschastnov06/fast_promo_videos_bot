@@ -13,6 +13,7 @@ VIDEO_FORMATS = {
     "9:16_soft_zoom": (1080, 1920),
     "9:16_cover": (1080, 1920),
 }
+VIDEO_SPEEDS = {1.0, 1.10, 1.25, 1.50, 2.00}
 SOFT_ZOOM_FACTOR = 1.12
 PROCESS_TIMEOUT_SECONDS = 300
 FONT_FILE = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -53,12 +54,14 @@ async def process_video(
     subtitles_path: Path | None = None,
     output_format: str = "9:16",
     fill_color: str = "black",
+    video_speed: float = 1.0,
     mirror: bool = False,
     strip_metadata: bool = True,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     process = None
     output_width, output_height = VIDEO_FORMATS.get(output_format, (WIDTH, HEIGHT))
+    video_speed = _normalize_video_speed(video_speed)
     normalized_banner_path = (
         output_path.with_name(f"{output_path.stem}_banner.png") if ad_banner_path else None
     )
@@ -95,20 +98,21 @@ async def process_video(
             base_filters.append("hflip")
 
         if ad_banner_path:
-            final_ad_label = "with_ad" if subtitles_path else "v"
-
-            filter_complex = ";".join(
-                [
-                    f"[0:v]{','.join(base_filters)}[base]",
-                    "[1:v]format=rgba,colorchannelmixer=aa=0.95[banner]",
-                    (
-                        f"[base][banner]overlay=x=0:y={AD_TOP_MARGIN}:"
-                        f"eof_action=repeat:shortest=1[{final_ad_label}]"
-                    ),
-                ]
-            )
+            filter_parts = [
+                f"[0:v]{','.join(base_filters)}[base]",
+                "[1:v]format=rgba,colorchannelmixer=aa=0.95[banner]",
+                (
+                    f"[base][banner]overlay=x=0:y={AD_TOP_MARGIN}:"
+                    "eof_action=repeat:shortest=1[with_ad]"
+                ),
+            ]
+            current_label = "with_ad"
             if subtitles_path:
-                filter_complex += f";[with_ad]{_ass_subtitles_filter(subtitles_path)}[v]"
+                filter_parts.append(f"[{current_label}]{_ass_subtitles_filter(subtitles_path)}[with_subtitles]")
+                current_label = "with_subtitles"
+
+            filter_parts.append(_finish_video_filter(current_label, video_speed))
+            filter_complex = ";".join(filter_parts)
         elif ad_text is not None:
             ad_text_ass_path = await _prepare_ad_text_ass(ad_text, output_path)
             video_filters = [
@@ -118,6 +122,8 @@ async def process_video(
 
             if subtitles_path:
                 video_filters.append(_ass_subtitles_filter(subtitles_path))
+
+            video_filters.append(_video_speed_filter(video_speed))
 
             filter_complex = (
                 f"[0:v]"
@@ -129,6 +135,8 @@ async def process_video(
 
             if subtitles_path:
                 video_filters.append(_ass_subtitles_filter(subtitles_path))
+
+            video_filters.append(_video_speed_filter(video_speed))
 
             filter_complex = (
                 f"[0:v]"
@@ -188,6 +196,10 @@ async def process_video(
                 str(output_path),
             ]
         )
+
+        if video_speed != 1.0:
+            output_arg = cmd.pop()
+            cmd.extend(["-filter:a", f"atempo={_format_speed(video_speed)}", output_arg])
 
         if strip_metadata:
             output_arg = cmd.pop()
@@ -301,6 +313,29 @@ def _aspect_ratio(output_format: str) -> str:
         return "9:16"
 
     return output_format
+
+
+def _normalize_video_speed(video_speed: float) -> float:
+    rounded_speed = round(video_speed, 2)
+    if rounded_speed not in VIDEO_SPEEDS:
+        raise VideoProcessingError(f"Unsupported video speed: {video_speed}")
+
+    return rounded_speed
+
+
+def _video_speed_filter(video_speed: float) -> str:
+    if video_speed == 1.0:
+        return "null"
+
+    return f"setpts=PTS/{_format_speed(video_speed)}"
+
+
+def _finish_video_filter(input_label: str, video_speed: float) -> str:
+    return f"[{input_label}]{_video_speed_filter(video_speed)}[v]"
+
+
+def _format_speed(video_speed: float) -> str:
+    return f"{video_speed:.2f}".rstrip("0").rstrip(".")
 
 
 def _ass_subtitles_filter(subtitles_path: Path) -> str:

@@ -51,6 +51,7 @@ DEFAULT_FILL_COLOR = "black"
 DEFAULT_SUBTITLE_FONT = "DejaVu Sans"
 DEFAULT_SUBTITLE_COLOR = "white"
 DEFAULT_STRIP_METADATA = True
+DEFAULT_VIDEO_SPEED = 1.0
 FILL_COLORS = {
     "black": "черное",
     "white": "белое",
@@ -65,6 +66,13 @@ SUBTITLE_FONTS = {
     "Roboto": "Roboto",
     "DejaVu Sans Mono": "DejaVu Sans Mono",
 }
+VIDEO_SPEEDS = {
+    1.0: "нет",
+    1.10: "1.10x",
+    1.25: "1.25x",
+    1.50: "1.50x",
+    2.00: "2.00x",
+}
 
 
 @dataclass
@@ -73,6 +81,7 @@ class MontageSettings:
     fill_color: str = DEFAULT_FILL_COLOR
     subtitle_font: str = DEFAULT_SUBTITLE_FONT
     subtitle_color: str = DEFAULT_SUBTITLE_COLOR
+    video_speed: float = DEFAULT_VIDEO_SPEED
     mirror: bool = False
     strip_metadata: bool = DEFAULT_STRIP_METADATA
 
@@ -83,9 +92,11 @@ class PendingVideo:
     audio_path: Path
     subtitles_path: Path
     output_path: Path
+    video_count: int = 1
     settings: MontageSettings = field(default_factory=MontageSettings)
     ad_text: str | None = None
     ad_banner_path: Path | None = None
+    ad_banner_name: str | None = None
     cleanup_ad_banner: bool = False
     ready_for_montage: bool = False
 
@@ -144,6 +155,7 @@ async def set_ad_text(message: Message) -> None:
     await message.answer("Рекламный контент обработан")
     pending.ad_text = text
     pending.ad_banner_path = None
+    pending.ad_banner_name = None
     pending.cleanup_ad_banner = False
     pending.ready_for_montage = True
     await _send_montage_settings(message, pending)
@@ -172,6 +184,7 @@ async def set_ad_banner(message: Message, bot: Bot) -> None:
         file_id=photo.file_id,
         suffix=".jpg",
         file_size=photo.file_size,
+        display_name="banner.jpg",
     )
 
 
@@ -192,6 +205,7 @@ async def set_ad_banner_document(message: Message, bot: Bot) -> None:
         file_id=document.file_id,
         suffix=_image_suffix(document.mime_type, document.file_name),
         file_size=document.file_size,
+        display_name=document.file_name,
     )
 
 
@@ -201,6 +215,7 @@ async def _handle_ad_banner_file(
     file_id: str,
     suffix: str,
     file_size: int | None,
+    display_name: str | None,
 ) -> None:
     if file_size and file_size > MAX_BANNER_SIZE_BYTES:
         await message.answer(f"Ошибка: баннер слишком большой. Максимум — {MAX_BANNER_SIZE_MB} МБ.")
@@ -225,6 +240,7 @@ async def _handle_ad_banner_file(
     await message.answer("Рекламный контент обработан")
     pending.ad_text = None
     pending.ad_banner_path = banner_path
+    pending.ad_banner_name = display_name or banner_path.name
     pending.cleanup_ad_banner = True
     pending.ready_for_montage = True
     await _send_montage_settings(message, pending)
@@ -297,6 +313,7 @@ async def handle_ad_text(message: Message) -> None:
         await message.answer("Видео будет без рекламного контента", reply_markup=ReplyKeyboardRemove())
         pending.ad_text = None
         pending.ad_banner_path = None
+        pending.ad_banner_name = None
         pending.cleanup_ad_banner = False
         pending.ready_for_montage = True
         await _send_montage_settings(message, pending)
@@ -310,6 +327,7 @@ async def handle_ad_text(message: Message) -> None:
     await message.answer("Рекламный контент обработан")
     pending.ad_text = text
     pending.ad_banner_path = None
+    pending.ad_banner_name = None
     pending.cleanup_ad_banner = False
     pending.ready_for_montage = True
     await _send_montage_settings(message, pending)
@@ -334,6 +352,7 @@ async def handle_no_content_callback(callback: CallbackQuery) -> None:
     await callback.message.answer("Видео будет без рекламного контента")
     pending.ad_text = None
     pending.ad_banner_path = None
+    pending.ad_banner_name = None
     pending.cleanup_ad_banner = False
     pending.ready_for_montage = True
     await _send_montage_settings(callback.message, pending)
@@ -386,6 +405,13 @@ async def handle_settings_callback(callback: CallbackQuery) -> None:
         subtitle_color = action.removeprefix("settings:subtitle_color:")
         if subtitle_color in SUBTITLE_COLORS:
             pending.settings.subtitle_color = subtitle_color
+        await _edit_montage_settings(callback.message, pending, _montage_settings_keyboard(pending))
+    elif action == "settings:speed":
+        await _edit_montage_settings(callback.message, pending, _video_speed_keyboard())
+    elif action.startswith("settings:speed:"):
+        video_speed = _decode_speed_callback(action.removeprefix("settings:speed:"))
+        if video_speed in VIDEO_SPEEDS:
+            pending.settings.video_speed = video_speed
         await _edit_montage_settings(callback.message, pending, _montage_settings_keyboard(pending))
     elif action == "settings:mirror":
         pending.settings.mirror = not pending.settings.mirror
@@ -468,11 +494,14 @@ async def _edit_montage_settings(
 def _montage_settings_text(pending: PendingVideo) -> str:
     settings = pending.settings
     return (
+        f"Кол-во видео - {pending.video_count}\n"
+        f"Рекламный контент - {_ad_content_label(pending)}\n\n"
         "Параметры для монтажа:\n\n"
         f"Формат: {_format_label(settings.video_format)}\n"
         f"Заполнение пустоты: {FILL_COLORS[settings.fill_color]}\n"
         f"Шрифт субтитров: {settings.subtitle_font}\n"
         f"Цвет субтитров: {SUBTITLE_COLORS[settings.subtitle_color]}\n"
+        f"Ускорение видео: {VIDEO_SPEEDS[settings.video_speed]}\n"
         f"Зеркальность видео: {'да' if settings.mirror else 'нет'}\n"
         f"Удаление метаданных: {'да' if settings.strip_metadata else 'нет'}\n\n"
         "Если все подходит, нажмите \"Отправить в монтаж\""
@@ -488,6 +517,7 @@ def _montage_settings_keyboard(pending: PendingVideo) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Изменить цвет заполнения", callback_data="settings:fill")],
             [InlineKeyboardButton(text="Изменить шрифт субтитров", callback_data="settings:font")],
             [InlineKeyboardButton(text="Изменить цвет субтитров", callback_data="settings:subtitle_color")],
+            [InlineKeyboardButton(text="Ускорение", callback_data="settings:speed")],
             [InlineKeyboardButton(text=mirror_text, callback_data="settings:mirror")],
             [InlineKeyboardButton(text=metadata_text, callback_data="settings:metadata")],
             [InlineKeyboardButton(text="✅ Отправить в монтаж", callback_data="settings:render")],
@@ -536,6 +566,19 @@ def _subtitle_color_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def _video_speed_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Без ускорения", callback_data="settings:speed:none")],
+            [InlineKeyboardButton(text="1.10x", callback_data="settings:speed:1_10")],
+            [InlineKeyboardButton(text="1.25x", callback_data="settings:speed:1_25")],
+            [InlineKeyboardButton(text="1.50x", callback_data="settings:speed:1_50")],
+            [InlineKeyboardButton(text="2.00x", callback_data="settings:speed:2_00")],
+            [InlineKeyboardButton(text="Назад", callback_data="settings:main")],
+        ]
+    )
+
+
 def _format_label(video_format: str) -> str:
     labels = {
         "9:16": "9:16, без растягивания",
@@ -552,6 +595,25 @@ def _decode_format_callback(value: str) -> str:
         return "9:16_cover"
 
     return value.replace("_", ":")
+
+
+def _decode_speed_callback(value: str) -> float:
+    if value == "none":
+        return DEFAULT_VIDEO_SPEED
+
+    try:
+        return float(value.replace("_", "."))
+    except ValueError:
+        return DEFAULT_VIDEO_SPEED
+
+
+def _ad_content_label(pending: PendingVideo) -> str:
+    if pending.ad_text is not None:
+        return f"«{pending.ad_text}»"
+    if pending.ad_banner_path is not None:
+        return pending.ad_banner_name or pending.ad_banner_path.name
+
+    return "нет"
 
 
 async def _create_subtitles_file(
@@ -614,6 +676,7 @@ async def _process_pending_video(
             subtitles_path=subtitles_file,
             output_format=pending.settings.video_format,
             fill_color=pending.settings.fill_color,
+            video_speed=pending.settings.video_speed,
             mirror=pending.settings.mirror,
             strip_metadata=pending.settings.strip_metadata,
         )
