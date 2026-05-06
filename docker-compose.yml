@@ -1,8 +1,53 @@
 services:
   bot:
     build: .
+    command: python -m app.bot
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://video_bot:video_bot@postgres:5432/video_bot
+      REDIS_URL: redis://redis:6379/0
+      TMP_DIR: /app/tmp
     volumes:
       - ./tmp:/app/tmp
+    depends_on:
+      - postgres
+      - redis
     restart: unless-stopped
+
+  worker:
+    build: .
+    command: python -m app.worker
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://video_bot:video_bot@postgres:5432/video_bot
+      REDIS_URL: redis://redis:6379/0
+      TMP_DIR: /app/tmp
+    volumes:
+      - ./tmp:/app/tmp
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: video_bot
+      POSTGRES_USER: video_bot
+      POSTGRES_PASSWORD: video_bot
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -11,6 +12,11 @@ class Config:
     telegram_api_base: str | None
     telegram_api_is_local: bool
     allowed_telegram_usernames: frozenset[str]
+    database_url: str | None
+    redis_url: str | None
+    tmp_dir: Path
+    max_concurrent_renders: int
+    render_job_timeout_seconds: int
 
 
 def load_config() -> Config:
@@ -26,6 +32,11 @@ def load_config() -> Config:
         telegram_api_base=os.getenv("TELEGRAM_API_BASE"),
         telegram_api_is_local=os.getenv("TELEGRAM_API_IS_LOCAL", "").lower() in {"1", "true", "yes"},
         allowed_telegram_usernames=_parse_usernames(os.getenv("ALLOWED_TELEGRAM_USERNAMES", "")),
+        database_url=os.getenv("DATABASE_URL"),
+        redis_url=os.getenv("REDIS_URL"),
+        tmp_dir=Path(os.getenv("TMP_DIR", "tmp")),
+        max_concurrent_renders=_parse_int(os.getenv("MAX_CONCURRENT_RENDERS"), default=1),
+        render_job_timeout_seconds=_parse_int(os.getenv("RENDER_JOB_TIMEOUT_SECONDS"), default=900),
     )
 
 
@@ -36,3 +47,13 @@ def _parse_usernames(value: str) -> frozenset[str]:
         if username.strip()
     }
     return frozenset(usernames)
+
+
+def _parse_int(value: str | None, default: int) -> int:
+    if value is None or not value.strip():
+        return default
+
+    try:
+        return int(value)
+    except ValueError:
+        return default
