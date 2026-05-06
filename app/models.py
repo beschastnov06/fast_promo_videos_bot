@@ -88,6 +88,7 @@ class VideoJob(Base, TimestampMixin):
     ad_banner_file_unique_id: Mapped[str | None] = mapped_column(Text)
     ad_banner_name: Mapped[str | None] = mapped_column(Text)
     error_message: Mapped[str | None] = mapped_column(Text)
+    render_stage: Mapped[str] = mapped_column(Text, nullable=False, default="draft", server_default="draft")
     credits_charged: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -24,30 +24,37 @@ def write_ass_subtitles(
     output_path: Path,
     font_name: str = "DejaVu Sans",
     font_color: str = "white",
+    width: int = WIDTH,
+    height: int = HEIGHT,
 ) -> None:
-    output_path.write_text(_build_ass(segments, font_name=font_name, font_color=font_color), encoding="utf-8")
+    output_path.write_text(
+        _build_ass(segments, font_name=font_name, font_color=font_color, width=width, height=height),
+        encoding="utf-8",
+    )
 
 
-def write_ass_ad_text(text: str, output_path: Path) -> None:
-    output_path.write_text(_build_ad_ass(text), encoding="utf-8")
+def write_ass_ad_text(text: str, output_path: Path, width: int = WIDTH, height: int = HEIGHT) -> None:
+    output_path.write_text(_build_ad_ass(text, width=width, height=height), encoding="utf-8")
 
 
-def _build_ass(segments: list[SubtitleSegment], font_name: str, font_color: str) -> str:
-    margin_v = BOTTOM_SAFE
-    margin_lr = LEFT_RIGHT_SAFE
+def _build_ass(segments: list[SubtitleSegment], font_name: str, font_color: str, width: int, height: int) -> str:
+    scale = height / HEIGHT
+    margin_v = _scale(BOTTOM_SAFE, scale)
+    margin_lr = _scale(LEFT_RIGHT_SAFE, scale)
+    font_size = _scale(FONT_SIZE, scale)
     font_name = _escape_ass(font_name)
     primary_color, secondary_color, outline_color, back_color = _subtitle_colors(font_color)
 
     header = f"""[Script Info]
 ScriptType: v4.00+
-PlayResX: {WIDTH}
-PlayResY: {HEIGHT}
+PlayResX: {width}
+PlayResY: {height}
 WrapStyle: 2
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_name},{FONT_SIZE},{primary_color},{secondary_color},{outline_color},{back_color},1,0,0,0,100,100,0,0,3,0,0,2,{margin_lr},{margin_lr},{margin_v},1
+Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},1,0,0,0,100,100,0,0,3,0,0,2,{margin_lr},{margin_lr},{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -65,20 +72,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return header + "\n".join(events) + "\n"
 
 
-def _build_ad_ass(text: str) -> str:
-    margin_v = AD_TOP_MARGIN + 42
+def _build_ad_ass(text: str, width: int, height: int) -> str:
+    scale = height / HEIGHT
+    margin_v = _scale(AD_TOP_MARGIN + 42, scale)
+    margin_lr = _scale(120, scale)
+    font_size = _scale(AD_FONT_SIZE, scale)
     text = _escape_ass(_wrap_ad_text(text))
 
     return f"""[Script Info]
 ScriptType: v4.00+
-PlayResX: {WIDTH}
-PlayResY: {HEIGHT}
+PlayResX: {width}
+PlayResY: {height}
 WrapStyle: 2
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Ad,DejaVu Sans,{AD_FONT_SIZE},&H00FFFFFF,&H000000FF,&HAA000000,&HAA000000,0,0,0,0,100,100,0,0,4,0,0,8,120,120,{margin_v},1
+Style: Ad,DejaVu Sans,{font_size},&H00FFFFFF,&H000000FF,&HAA000000,&HAA000000,0,0,0,0,100,100,0,0,4,0,0,8,{margin_lr},{margin_lr},{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -122,6 +132,10 @@ def _format_time(seconds: float) -> str:
 
 def _escape_ass(text: str) -> str:
     return text.replace("{", "\\{").replace("}", "\\}")
+
+
+def _scale(value: int, factor: float) -> int:
+    return max(1, round(value * factor))
 
 
 def _subtitle_colors(font_color: str) -> tuple[str, str, str, str]:

@@ -43,23 +43,27 @@ async def get_job(session: AsyncSession, job_id: uuid.UUID) -> VideoJob | None:
 
 async def mark_queued(session: AsyncSession, job: VideoJob, *, credits_charged: int) -> None:
     job.status = "queued"
+    job.render_stage = "queued"
     job.credits_charged = credits_charged
     job.queued_at = datetime.now(UTC)
 
 
 async def mark_processing(session: AsyncSession, job: VideoJob) -> None:
     job.status = "processing"
+    job.render_stage = "download"
     job.started_at = datetime.now(UTC)
 
 
 async def mark_completed(session: AsyncSession, job: VideoJob) -> None:
     job.status = "completed"
+    job.render_stage = "completed"
     job.finished_at = datetime.now(UTC)
     job.error_message = None
 
 
 async def mark_failed(session: AsyncSession, job: VideoJob, error_message: str) -> None:
     job.status = "failed"
+    job.render_stage = "failed"
     job.finished_at = datetime.now(UTC)
     job.error_message = error_message
 
@@ -70,6 +74,10 @@ async def mark_refunded(session: AsyncSession, job: VideoJob) -> None:
 
 async def set_status_message_id(session: AsyncSession, job: VideoJob, message_id: int) -> None:
     job.telegram_status_message_id = message_id
+
+
+async def set_render_stage(session: AsyncSession, job: VideoJob, stage: str) -> None:
+    job.render_stage = stage
 
 
 async def get_queue_position(session: AsyncSession, job: VideoJob) -> int:
@@ -114,4 +122,5 @@ async def get_latest_active_job_for_telegram_user(
 
 async def mark_cancelled(session: AsyncSession, job: VideoJob) -> None:
     job.status = "cancelled"
+    job.render_stage = "cancelled"
     job.finished_at = datetime.now(UTC)

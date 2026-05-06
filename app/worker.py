@@ -9,7 +9,7 @@ from pathlib import Path
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
-from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from arq.connections import RedisSettings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -24,21 +24,21 @@ from app.repositories.video_jobs import (
     mark_failed,
     mark_processing,
     mark_refunded,
+    set_render_stage,
     set_status_message_id,
 )
 from app.subtitles import write_ass_subtitles
 from app.transcriber import TranscriptionError, extract_audio, transcribe_audio
 from app.video_processor import (
-    HEIGHT,
-    VIDEO_FORMATS,
     VideoProcessingError,
-    WIDTH,
     ensure_ffmpeg_available,
     process_video,
+    resolve_output_dimensions,
 )
 
 logger = logging.getLogger(__name__)
 NEW_VIDEO_CALLBACK = "flow:new_video"
+CHECK_RENDER_STATUS_CALLBACK_PREFIX = "render:status:"
 SEND_VIDEO_TIMEOUT_SECONDS = 300
 
 
@@ -94,10 +94,14 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
         if not job.telegram_video_file_id:
             raise VideoProcessingError("Telegram video file_id is missing")
 
+        await _set_render_stage(session_factory, job_uuid, "download")
         await _download_telegram_file(bot, file_id=job.telegram_video_file_id, destination=input_path)
         ad_banner_path = await _download_ad_banner(bot, job, job_dir)
 
         settings = job.settings
+        output_format = settings.video_format if settings else "9:16"
+        output_width, output_height = await resolve_output_dimensions(input_path, output_format)
+        await _set_render_stage(session_factory, job_uuid, "subtitles")
         subtitles_file = await _create_subtitles_file(
             config=config,
             input_path=input_path,
@@ -105,10 +109,12 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
             subtitles_path=subtitles_path,
             subtitle_font=settings.subtitle_font if settings else "DejaVu Sans",
             subtitle_color=settings.subtitle_color if settings else "white",
+            output_width=output_width,
+            output_height=output_height,
         )
 
-        output_format = settings.video_format if settings else "9:16"
-        await process_video(
+        await _set_render_stage(session_factory, job_uuid, "render")
+        output_width, output_height = await process_video(
             input_path=input_path,
             output_path=output_path,
             ad_text=job.ad_text if job.ad_content_type == "text" else None,
@@ -121,14 +127,14 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
             strip_metadata=settings.strip_metadata if settings else True,
         )
 
-        await _edit_status_message(
+        await _set_render_stage(session_factory, job_uuid, "upload")
+        await _delete_status_message(
             bot=bot,
             chat_id=job.telegram_chat_id,
             message_id=job.telegram_status_message_id,
-            text="Видео смонтировано отправляем вам",
         )
+        await bot.send_message(chat_id=job.telegram_chat_id, text="Видео смонтировано отправляем вам")
 
-        output_width, output_height = VIDEO_FORMATS.get(output_format, (WIDTH, HEIGHT))
         await _send_ready_video(
             bot=bot,
             chat_id=job.telegram_chat_id,
@@ -143,12 +149,6 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
                 if finished_job:
                     await mark_completed(session, finished_job)
 
-        await _edit_status_message(
-            bot=bot,
-            chat_id=job.telegram_chat_id,
-            message_id=job.telegram_status_message_id,
-            text="Готово",
-        )
     except Exception as exc:
         logger.exception("Render job failed: job_id=%s", job_id)
         failed_chat_id = None
@@ -172,7 +172,11 @@ async def render_video(ctx: dict, job_id: str, **kwargs) -> None:
             try:
                 await bot.send_message(
                     chat_id=failed_chat_id,
-                    text="Ошибка: не удалось смонтировать видео. Попробуйте отправить файл заново.",
+                    text=(
+                        "Ошибка: не удалось смонтировать или отправить видео.\n\n"
+                        "С вашего счета ничего не списалось: видео возвращено на баланс.\n"
+                        "Попробуйте отправить файл заново."
+                    ),
                 )
             except Exception:
                 logger.exception("Failed to send render failure message: job_id=%s", job_id)
@@ -300,7 +304,7 @@ async def _replace_queue_status_with_processing_message(
         message = await bot.send_message(
             chat_id=chat_id,
             text="Отправили видео на монтаж",
-            reply_markup=ReplyKeyboardRemove(),
+            reply_markup=_check_render_status_keyboard(job_id),
         )
     except Exception:
         logger.exception("Failed to send processing status message: job_id=%s", job_id)
@@ -322,6 +326,28 @@ async def _refresh_queue_positions(*, bot: Bot, session: AsyncSession) -> None:
             message_id=queued_job.telegram_status_message_id,
             text=f"Вы {position} в очереди",
         )
+
+
+async def _set_render_stage(
+    session_factory: async_sessionmaker[AsyncSession],
+    job_id: uuid.UUID,
+    stage: str,
+) -> None:
+    async with session_factory() as session:
+        async with session.begin():
+            job = await get_job(session, job_id)
+            if job:
+                await set_render_stage(session, job, stage)
+
+
+async def _delete_status_message(*, bot: Bot, chat_id: int, message_id: int | None) -> None:
+    if message_id is None:
+        return
+
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception as exc:
+        logger.warning("Failed to delete render status message: chat_id=%s message_id=%s error=%s", chat_id, message_id, exc)
 
 
 async def _send_ready_video(
@@ -372,6 +398,8 @@ async def _create_subtitles_file(
     subtitles_path: Path,
     subtitle_font: str,
     subtitle_color: str,
+    output_width: int,
+    output_height: int,
 ) -> Path | None:
     if not config.openai_api_key:
         logger.warning("OPENAI_API_KEY is not set. Video will be processed without subtitles.")
@@ -396,8 +424,23 @@ async def _create_subtitles_file(
         output_path=subtitles_path,
         font_name=subtitle_font,
         font_color=subtitle_color,
+        width=output_width,
+        height=output_height,
     )
     return subtitles_path
+
+
+def _check_render_status_keyboard(job_id: uuid.UUID) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Проверить статус",
+                    callback_data=f"{CHECK_RENDER_STATUS_CALLBACK_PREFIX}{job_id}",
+                )
+            ],
+        ]
+    )
 
 
 def _new_video_keyboard() -> InlineKeyboardMarkup:

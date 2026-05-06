@@ -13,6 +13,15 @@ VIDEO_FORMATS = {
     "9:16_soft_zoom": (1080, 1920),
     "9:16_cover": (1080, 1920),
 }
+VIDEO_FORMATS_720 = {
+    "9:16": (720, 1280),
+    "9:16_soft_zoom": (720, 1280),
+    "9:16_cover": (720, 1280),
+}
+VIDEO_BITRATES = {
+    720: ("2200k", "2800k", "4400k"),
+    1080: ("4000k", "5000k", "8000k"),
+}
 VIDEO_SPEEDS = {1.0, 1.10, 1.25, 1.50, 2.00}
 SOFT_ZOOM_FACTOR = 1.12
 PROCESS_TIMEOUT_SECONDS = 300
@@ -57,10 +66,14 @@ async def process_video(
     video_speed: float = 1.0,
     mirror: bool = False,
     strip_metadata: bool = True,
-) -> None:
+) -> tuple[int, int]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     process = None
-    output_width, output_height = VIDEO_FORMATS.get(output_format, (WIDTH, HEIGHT))
+    output_width, output_height = await resolve_output_dimensions(input_path, output_format)
+    video_bitrate, maxrate, bufsize = _video_bitrate(output_width)
+    layout_scale = output_height / HEIGHT
+    ad_top_margin = _scale(AD_TOP_MARGIN, layout_scale)
+    ad_slot_height = _scale(AD_SLOT_HEIGHT, layout_scale)
     video_speed = _normalize_video_speed(video_speed)
     normalized_banner_path = (
         output_path.with_name(f"{output_path.stem}_banner.png") if ad_banner_path else None
@@ -68,7 +81,12 @@ async def process_video(
 
     try:
         if ad_banner_path and normalized_banner_path:
-            await _normalize_banner(ad_banner_path, normalized_banner_path, output_width=output_width)
+            await _normalize_banner(
+                ad_banner_path,
+                normalized_banner_path,
+                output_width=output_width,
+                ad_slot_height=ad_slot_height,
+            )
             ad_banner_path = normalized_banner_path
 
         if output_format == "9:16_cover":
@@ -102,7 +120,7 @@ async def process_video(
                 f"[0:v]{','.join(base_filters)}[base]",
                 "[1:v]format=rgba,colorchannelmixer=aa=0.95[banner]",
                 (
-                    f"[base][banner]overlay=x=0:y={AD_TOP_MARGIN}:"
+                    f"[base][banner]overlay=x=0:y={ad_top_margin}:"
                     "eof_action=repeat:shortest=1[with_ad]"
                 ),
             ]
@@ -114,7 +132,12 @@ async def process_video(
             filter_parts.append(_finish_video_filter(current_label, video_speed))
             filter_complex = ";".join(filter_parts)
         elif ad_text is not None:
-            ad_text_ass_path = await _prepare_ad_text_ass(ad_text, output_path)
+            ad_text_ass_path = await _prepare_ad_text_ass(
+                ad_text,
+                output_path,
+                output_width=output_width,
+                output_height=output_height,
+            )
             video_filters = [
                 *base_filters,
                 _ass_subtitles_filter(ad_text_ass_path),
@@ -171,8 +194,12 @@ async def process_video(
                 "libx264",
                 "-preset",
                 "ultrafast",
-                "-crf",
-                "26",
+                "-b:v",
+                video_bitrate,
+                "-maxrate",
+                maxrate,
+                "-bufsize",
+                bufsize,
                 "-threads",
                 "2",
                 "-x264-params",
@@ -252,6 +279,7 @@ async def process_video(
             logger.info("FFmpeg stderr:\n%s", stderr_text)
 
         logger.info("FFmpeg processing finished: %s", output_path)
+        return output_width, output_height
     finally:
         if ad_text is not None:
             output_path.with_name(f"{output_path.stem}_ad.ass").unlink(missing_ok=True)
@@ -259,7 +287,54 @@ async def process_video(
             normalized_banner_path.unlink(missing_ok=True)
 
 
-async def _normalize_banner(input_path: Path, output_path: Path, output_width: int = WIDTH) -> None:
+async def resolve_output_dimensions(input_path: Path, output_format: str = "9:16") -> tuple[int, int]:
+    input_width, input_height = await _probe_video_dimensions(input_path)
+    max_source_edge = max(input_width, input_height)
+    if max_source_edge <= 1280:
+        return VIDEO_FORMATS_720.get(output_format, (720, 1280))
+
+    return VIDEO_FORMATS.get(output_format, (WIDTH, HEIGHT))
+
+
+async def _probe_video_dimensions(input_path: Path) -> tuple[int, int]:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "csv=s=x:p=0",
+        str(input_path),
+    ]
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        logger.warning("ffprobe failed, using 1080 output. Stderr: %s", stderr.decode("utf-8", errors="replace"))
+        return WIDTH, HEIGHT
+
+    raw_dimensions = stdout.decode("utf-8", errors="replace").strip()
+    try:
+        raw_dimensions = raw_dimensions.splitlines()[0]
+        width, height = raw_dimensions.split("x", maxsplit=1)
+        return int(width), int(height)
+    except (ValueError, IndexError):
+        logger.warning("Could not parse ffprobe dimensions %r, using 1080 output", raw_dimensions)
+        return WIDTH, HEIGHT
+
+
+async def _normalize_banner(
+    input_path: Path,
+    output_path: Path,
+    output_width: int = WIDTH,
+    ad_slot_height: int = AD_SLOT_HEIGHT,
+) -> None:
     cmd = [
         "ffmpeg",
         "-y",
@@ -269,8 +344,8 @@ async def _normalize_banner(input_path: Path, output_path: Path, output_width: i
         "-vf",
         (
             "format=rgba,"
-            f"scale={output_width}:{AD_SLOT_HEIGHT}:force_original_aspect_ratio=decrease,"
-            f"pad={output_width}:{AD_SLOT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black@0,"
+            f"scale={output_width}:{ad_slot_height}:force_original_aspect_ratio=decrease,"
+            f"pad={output_width}:{ad_slot_height}:(ow-iw)/2:(oh-ih)/2:color=black@0,"
             "format=rgba"
         ),
         "-frames:v",
@@ -342,9 +417,22 @@ def _ass_subtitles_filter(subtitles_path: Path) -> str:
     return f"subtitles=filename='{_escape_drawtext(str(subtitles_path))}'"
 
 
-async def _prepare_ad_text_ass(ad_text: str, output_path: Path) -> Path:
+async def _prepare_ad_text_ass(
+    ad_text: str,
+    output_path: Path,
+    output_width: int = WIDTH,
+    output_height: int = HEIGHT,
+) -> Path:
     from app.subtitles import write_ass_ad_text
 
     ad_text_ass_path = output_path.with_name(f"{output_path.stem}_ad.ass")
-    write_ass_ad_text(ad_text, ad_text_ass_path)
+    write_ass_ad_text(ad_text, ad_text_ass_path, width=output_width, height=output_height)
     return ad_text_ass_path
+
+
+def _video_bitrate(output_width: int) -> tuple[str, str, str]:
+    return VIDEO_BITRATES[720 if output_width <= 720 else 1080]
+
+
+def _scale(value: int, factor: float) -> int:
+    return max(1, round(value * factor))
