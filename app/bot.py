@@ -64,6 +64,8 @@ CANCEL_MONTAGE_TEXT = "Отменить монтаж"
 NEW_VIDEO_CALLBACK = "flow:new_video"
 START_MONTAGE_CALLBACK = "flow:start_montage"
 MENU_CALLBACK = "flow:menu"
+CHANGE_VIDEO_CALLBACK = "flow:change_video"
+CHANGE_AD_CONTENT_CALLBACK = "content:change"
 BUY_PACKAGE_CALLBACK_PREFIX = "billing:buy:"
 MAX_AD_TEXT_CHARS = 60
 INTRO_BONUS_VIDEOS = 3
@@ -423,6 +425,42 @@ async def handle_no_content_callback(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+@dp.callback_query(F.data == CHANGE_VIDEO_CALLBACK)
+async def handle_change_video_callback(callback: CallbackQuery) -> None:
+    if not _is_allowed_callback(callback):
+        await callback.answer("на этапе разработки", show_alert=True)
+        return
+
+    if callback.message:
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer(f"Отправьте видео до {MAX_VIDEO_SIZE_MB} МБ для нового монтажа")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == CHANGE_AD_CONTENT_CALLBACK)
+async def handle_change_ad_content_callback(callback: CallbackQuery) -> None:
+    if not _is_allowed_callback(callback):
+        await callback.answer("на этапе разработки", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    pending = pending_videos.get(user_id)
+    if not pending:
+        await callback.answer("Видео для монтажа не найдено", show_alert=True)
+        return
+    if not callback.message:
+        await callback.answer()
+        return
+
+    pending.ad_text = None
+    pending.ad_banner_file_id = None
+    pending.ad_banner_file_unique_id = None
+    pending.ad_banner_name = None
+    pending.ready_for_montage = False
+    await callback.message.answer(_change_ad_content_text(), reply_markup=_ad_content_keyboard())
+    await callback.answer()
+
+
 @dp.callback_query(F.data == NEW_VIDEO_CALLBACK)
 async def handle_new_video_callback(callback: CallbackQuery) -> None:
     if not _is_allowed_callback(callback):
@@ -637,6 +675,7 @@ def _montage_settings_keyboard(pending: PendingVideo) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Ускорение", callback_data="settings:speed")],
             [InlineKeyboardButton(text=mirror_text, callback_data="settings:mirror")],
             [InlineKeyboardButton(text=metadata_text, callback_data="settings:metadata")],
+            [InlineKeyboardButton(text="Поменять рекламный контент", callback_data=CHANGE_AD_CONTENT_CALLBACK)],
             [InlineKeyboardButton(text="✅ Отправить в монтаж", callback_data="settings:render")],
         ]
     )
@@ -1041,6 +1080,13 @@ def _how_it_works_text() -> str:
     )
 
 
+def _change_ad_content_text() -> str:
+    return (
+        "Добавьте рекламный контент (текст или баннер) сверху макета - отправьте то что необходимо\n\n"
+        "❗️формат баннеров .png необходимо отправить в формате \"без сжатия\""
+    )
+
+
 def _balance_added_text(*, added_videos: int, balance_value: int) -> str:
     return (
         f"➕ Начислено {added_videos} видео на ваш счет\n"
@@ -1158,6 +1204,7 @@ def _ad_content_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=NO_CONTENT_TEXT, callback_data="content:none")],
+            [InlineKeyboardButton(text="Поменять видео", callback_data=CHANGE_VIDEO_CALLBACK)],
         ]
     )
 
