@@ -47,6 +47,8 @@ MAX_BANNER_SIZE_BYTES = MAX_BANNER_SIZE_MB * 1024 * 1024
 TMP_DIR = Path("tmp")
 NO_CONTENT_TEXT = "Без контента"
 NEW_VIDEO_CALLBACK = "flow:new_video"
+START_MONTAGE_CALLBACK = "flow:start_montage"
+MENU_CALLBACK = "flow:menu"
 MAX_AD_TEXT_CHARS = 60
 INTRO_BONUS_VIDEOS = 3
 RENDER_COST_VIDEOS = 1
@@ -138,12 +140,15 @@ dp.message.outer_middleware(UsernameWhitelistMiddleware())
 
 @dp.message(CommandStart())
 async def start(message: Message) -> None:
-    bonus_granted = await _ensure_intro_bonus(message)
+    intro_bonus = await _ensure_intro_bonus(message)
     await message.answer(_welcome_text())
     await message.answer(
-        _how_it_works_text(bonus_granted=bonus_granted),
-        reply_markup=ReplyKeyboardRemove(),
+        _how_it_works_text(),
+        reply_markup=_start_keyboard(),
     )
+    if intro_bonus:
+        added_videos, balance_value = intro_bonus
+        await message.answer(_balance_added_text(added_videos=added_videos, balance_value=balance_value))
 
 
 @dp.message(Command("balance"))
@@ -366,6 +371,32 @@ async def handle_new_video_callback(callback: CallbackQuery) -> None:
 
     if callback.message:
         await callback.message.answer(f"Отправьте видео до {MAX_VIDEO_SIZE_MB} МБ для нового монтажа")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == START_MONTAGE_CALLBACK)
+async def handle_start_montage_callback(callback: CallbackQuery) -> None:
+    if not _is_allowed_callback(callback):
+        await callback.answer("на этапе разработки", show_alert=True)
+        return
+
+    if callback.message:
+        await callback.message.answer(f"Отправьте видео до {MAX_VIDEO_SIZE_MB} МБ для нового монтажа")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == MENU_CALLBACK)
+async def handle_menu_callback(callback: CallbackQuery) -> None:
+    if not _is_allowed_callback(callback):
+        await callback.answer("на этапе разработки", show_alert=True)
+        return
+
+    if callback.message:
+        balance_value = await _user_video_balance_from_telegram_user(callback.from_user)
+        await callback.message.answer(
+            f"На вашем счете: {balance_value} видео\n\n"
+            f"{_tariffs_text()}"
+        )
     await callback.answer()
 
 
@@ -758,7 +789,7 @@ def _db_session_factory() -> async_sessionmaker[AsyncSession]:
     return db_session_factory
 
 
-async def _ensure_intro_bonus(message: Message) -> bool:
+async def _ensure_intro_bonus(message: Message) -> tuple[int, int] | None:
     session_factory = _db_session_factory()
     telegram_user = message.from_user
     async with session_factory() as session:
@@ -771,7 +802,7 @@ async def _ensure_intro_bonus(message: Message) -> bool:
                 last_name=telegram_user.last_name if telegram_user else None,
             )
             if user.intro_bonus_granted:
-                return False
+                return None
 
             await add_credits(
                 session,
@@ -781,17 +812,25 @@ async def _ensure_intro_bonus(message: Message) -> bool:
                 source="bot",
             )
             user.intro_bonus_granted = True
-            return True
+            balance_value = await get_balance(session, user_id=user.id)
+            return INTRO_BONUS_VIDEOS, balance_value
 
 
 async def _user_video_balance(message: Message) -> int:
+    return await _user_video_balance_from_telegram_user(message.from_user, fallback_id=_user_id(message))
+
+
+async def _user_video_balance_from_telegram_user(telegram_user, fallback_id: int | None = None) -> int:
     session_factory = _db_session_factory()
-    telegram_user = message.from_user
+    telegram_user_id = telegram_user.id if telegram_user else fallback_id
+    if telegram_user_id is None:
+        raise RuntimeError("Telegram user id is missing")
+
     async with session_factory() as session:
         async with session.begin():
             user = await get_or_create_user(
                 session,
-                telegram_user_id=_user_id(message),
+                telegram_user_id=telegram_user_id,
                 telegram_username=telegram_user.username if telegram_user else None,
                 first_name=telegram_user.first_name if telegram_user else None,
                 last_name=telegram_user.last_name if telegram_user else None,
@@ -807,19 +846,20 @@ def _welcome_text() -> str:
     )
 
 
-def _how_it_works_text(*, bonus_granted: bool) -> str:
-    bonus_text = (
-        f"\n\n🎁 Начислили вам {INTRO_BONUS_VIDEOS} подарочных видео 🎁"
-        if bonus_granted
-        else ""
-    )
+def _how_it_works_text() -> str:
     return (
         "Краткая информация о работе c ботом:\n"
         f"1. 🎞 Отправляете видео (до {MAX_VIDEO_SIZE_MB} МБ), которое необходимо смонтировать\n"
         "2. 📌 Если необходимо, отправляете рекламный контент (текст или баннер)\n"
         "3. ⚙️ Выбираете настройки для монтажа\n"
-        "4. ✅ Получаете готовое видео ✅"
-        f"{bonus_text}"
+        "4. ✅ Получаете готовое видео"
+    )
+
+
+def _balance_added_text(*, added_videos: int, balance_value: int) -> str:
+    return (
+        f"➕ Начислено {added_videos} видео на ваш счет\n"
+        f"Доступно: {balance_value} видео"
     )
 
 
@@ -832,6 +872,17 @@ def _tariffs_text() -> str:
         lines.append(line)
 
     return "\n".join(lines)
+
+
+def _start_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Меню", callback_data=MENU_CALLBACK),
+                InlineKeyboardButton(text="Начать монтаж", callback_data=START_MONTAGE_CALLBACK),
+            ],
+        ]
+    )
 
 
 def _command_payload(text: str) -> str:
