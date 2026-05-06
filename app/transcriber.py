@@ -11,6 +11,15 @@ logger = logging.getLogger(__name__)
 AUDIO_BITRATE = "32k"
 AUDIO_SAMPLE_RATE = "16000"
 TRANSCRIPTION_MODEL = "whisper-1"
+SUBTITLE_CREDIT_MARKERS = (
+    ("редактор", "субтитр"),
+    ("корректор",),
+    ("субтитры", "сделал"),
+    ("субтитры", "делал"),
+    ("субтитры", "автор"),
+    ("subtitles", "by"),
+    ("caption", "by"),
+)
 
 
 @dataclass(frozen=True)
@@ -86,6 +95,10 @@ async def transcribe_audio(audio_path: Path, api_key: str) -> list[SubtitleSegme
         if start is None or end is None or not text:
             continue
 
+        if _is_subtitle_credit_hallucination(text):
+            logger.info("Filtered likely subtitle hallucination: %s", text)
+            continue
+
         result.append(
             SubtitleSegment(
                 start=float(start),
@@ -102,3 +115,8 @@ def _segment_value(segment, key: str):
     if isinstance(segment, dict):
         return segment.get(key)
     return getattr(segment, key, None)
+
+
+def _is_subtitle_credit_hallucination(text: str) -> bool:
+    normalized = " ".join(text.casefold().split())
+    return any(all(marker in normalized for marker in markers) for markers in SUBTITLE_CREDIT_MARKERS)
