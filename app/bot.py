@@ -66,10 +66,13 @@ CANCEL_MONTAGE_TEXT = "Отменить монтаж"
 NEW_VIDEO_CALLBACK = "flow:new_video"
 START_MONTAGE_CALLBACK = "flow:start_montage"
 MENU_CALLBACK = "flow:menu"
+TOP_UP_MENU_CALLBACK = "flow:top_up_menu"
+BACK_TO_MENU_CALLBACK = "flow:back_to_menu"
 CHANGE_VIDEO_CALLBACK = "flow:change_video"
 CHANGE_AD_CONTENT_CALLBACK = "content:change"
 CANCEL_PENDING_CALLBACK = "flow:cancel_pending"
 BUY_PACKAGE_CALLBACK_PREFIX = "billing:buy:"
+OFFER_URL = "https://telegra.ph/Oferta-usloviya-okazaniya-uslug-i-politika-obrabotki-personalnyh-dannyh-05-07"
 MAX_AD_TEXT_CHARS = 60
 INTRO_BONUS_VIDEOS = 3
 RENDER_COST_VIDEOS = 1
@@ -595,6 +598,32 @@ async def handle_menu_callback(callback: CallbackQuery) -> None:
     if callback.message:
         balance_value = await _user_video_balance_from_telegram_user(callback.from_user)
         await callback.message.answer(_menu_text(balance_value), reply_markup=_menu_keyboard())
+    await callback.answer()
+
+
+@dp.callback_query(F.data == TOP_UP_MENU_CALLBACK)
+async def handle_top_up_menu_callback(callback: CallbackQuery) -> None:
+    if not _is_allowed_callback(callback):
+        await callback.answer("на этапе разработки", show_alert=True)
+        return
+    if not callback.message:
+        await callback.answer()
+        return
+
+    await callback.message.edit_reply_markup(reply_markup=_top_up_keyboard())
+    await callback.answer()
+
+
+@dp.callback_query(F.data == BACK_TO_MENU_CALLBACK)
+async def handle_back_to_menu_callback(callback: CallbackQuery) -> None:
+    if not _is_allowed_callback(callback):
+        await callback.answer("на этапе разработки", show_alert=True)
+        return
+    if not callback.message:
+        await callback.answer()
+        return
+
+    await callback.message.edit_reply_markup(reply_markup=_menu_keyboard())
     await callback.answer()
 
 
@@ -1267,6 +1296,16 @@ def _start_keyboard() -> InlineKeyboardMarkup:
 def _menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="Пополнить счет", callback_data=TOP_UP_MENU_CALLBACK)],
+            [InlineKeyboardButton(text="Оферта и условия", url=OFFER_URL)],
+            [InlineKeyboardButton(text="Начать монтаж", callback_data=START_MONTAGE_CALLBACK)],
+        ]
+    )
+
+
+def _top_up_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text=f"Купить {title}",
@@ -1275,9 +1314,7 @@ def _menu_keyboard() -> InlineKeyboardMarkup:
             ]
             for videos_count, title, _, _ in TARIFF_PACKAGES
         ]
-        + [
-            [InlineKeyboardButton(text="Начать монтаж", callback_data=START_MONTAGE_CALLBACK)],
-        ]
+        + [[InlineKeyboardButton(text="Назад", callback_data=BACK_TO_MENU_CALLBACK)]]
     )
 
 
