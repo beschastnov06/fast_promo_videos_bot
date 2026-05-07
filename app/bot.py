@@ -73,6 +73,7 @@ CHANGE_AD_CONTENT_CALLBACK = "content:change"
 CANCEL_PENDING_CALLBACK = "flow:cancel_pending"
 BUY_PACKAGE_CALLBACK_PREFIX = "billing:buy:"
 OFFER_URL = "https://telegra.ph/Oferta-usloviya-okazaniya-uslug-i-politika-obrabotki-personalnyh-dannyh-05-07"
+QUESTIONS_CHAT_URL = "https://t.me/+WDfMXAPXWxY5OTYy"
 MAX_AD_TEXT_CHARS = 60
 INTRO_BONUS_VIDEOS = 3
 RENDER_COST_VIDEOS = 1
@@ -1313,6 +1314,7 @@ def _menu_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Пополнить счет", callback_data=TOP_UP_MENU_CALLBACK)],
             [InlineKeyboardButton(text="Оферта и условия", url=OFFER_URL)],
+            [InlineKeyboardButton(text="Чат для вопросов", url=QUESTIONS_CHAT_URL)],
             [InlineKeyboardButton(text="Начать монтаж", callback_data=START_MONTAGE_CALLBACK)],
         ]
     )
