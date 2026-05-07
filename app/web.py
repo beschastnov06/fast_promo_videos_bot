@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -30,6 +31,8 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+STATIC_DIR = Path(__file__).with_name("static")
+BOT_URL = "https://t.me/fast_promo_videos_bot"
 
 
 async def health(request: web.Request) -> web.Response:
@@ -44,13 +47,13 @@ async def robokassa_pay(request: web.Request) -> web.Response:
     async with session_factory() as session:
         payment = await get_payment_by_invoice_id(session, invoice_id)
         if payment is None:
-            raise web.HTTPNotFound(text="Payment not found")
+            return await robokassa_not_found(request)
         if payment.status != "pending":
-            return _html_response(_simple_page("Счет уже обработан", "Вернитесь в Telegram."))
+            return await robokassa_processed_payment(request)
 
         package = package_by_code(payment.package_code)
         if package is None:
-            raise web.HTTPNotFound(text="Payment package not found")
+            return await robokassa_not_found(request)
         form = build_payment_form(config, payment, package)
 
     return _html_response(_auto_submit_form(form.action_url, form.fields))
@@ -129,18 +132,68 @@ async def robokassa_result(request: web.Request) -> web.Response:
 
 async def robokassa_success(request: web.Request) -> web.Response:
     return _html_response(
-        _simple_page(
-            "Оплата подтверждается",
-            "Вернитесь в Telegram. Баланс пополнится после подтверждения платежа Robokassa.",
+        _payment_status_page(
+            title="Оплата прошла",
+            heading="Оплата прошла",
+            status_icon="✓",
+            status="success",
+            body=(
+                "Мы уже проверяем платеж. Если оплата подтверждена Robokassa, "
+                "видео будут начислены на баланс в Telegram."
+            ),
+            note=(
+                "Кассовый чек придет отдельным письмом на email, указанный при оплате. "
+                "Срок формирования чека — до 24 часов."
+            ),
+            footer="Если баланс не обновился в течение нескольких минут, напишите в поддержку через бота.",
         )
     )
 
 
 async def robokassa_fail(request: web.Request) -> web.Response:
     return _html_response(
-        _simple_page(
+        _payment_status_page(
+            title="Оплата не завершена",
+            heading="Оплата не завершена",
+            status_icon="!",
+            status="fail",
+            body=(
+                "Платеж был отменен или не прошел. Вы можете вернуться в Telegram "
+                "и попробовать оплатить пакет еще раз."
+            ),
+            note="Если деньги списались, но баланс не пополнился, напишите в поддержку через бота.",
+            footer="Баланс обновляется только после подтверждения платежа Robokassa.",
+        )
+    )
+
+
+async def robokassa_processed_payment(request: web.Request) -> web.Response:
+    return _html_response(
+        _payment_status_page(
+            title="Счет уже обработан",
+            heading="Счет уже обработан",
+            status_icon="✓",
+            status="success",
+            body="Этот счет уже был обработан. Вернитесь в Telegram, чтобы проверить баланс.",
+            note=(
+                "Если баланс не обновился, напишите в поддержку через бота "
+                "и укажите номер операции Robokassa."
+            ),
+            footer="Повторная оплата по этому счету недоступна.",
+        )
+    )
+
+
+async def robokassa_not_found(request: web.Request) -> web.Response:
+    return _html_response(
+        _payment_status_page(
             "Оплата не завершена",
-            "Платеж отменен или не прошел. Вернитесь в Telegram и попробуйте еще раз.",
+            heading="Счет не найден",
+            status_icon="!",
+            status="fail",
+            body="Не удалось найти счет на оплату. Вернитесь в Telegram и попробуйте создать новый счет.",
+            note="Если проблема повторяется, напишите в поддержку через бота.",
+            footer="Платеж не может быть продолжен без корректного счета.",
         )
     )
 
@@ -177,6 +230,7 @@ def create_app() -> web.Application:
     app.on_startup.append(startup)
     app.on_cleanup.append(cleanup)
     app.router.add_get("/health", health)
+    app.router.add_static("/static/", STATIC_DIR, show_index=False)
     app.router.add_get("/robokassa/pay/{invoice_id}", robokassa_pay)
     app.router.add_post("/robokassa/result", robokassa_result)
     app.router.add_get("/robokassa/success", robokassa_success)
@@ -293,18 +347,190 @@ def _auto_submit_form(action_url: str, fields: dict[str, str]) -> str:
 </html>"""
 
 
-def _simple_page(title: str, body: str) -> str:
+def _payment_status_page(
+    title: str,
+    *,
+    heading: str,
+    status_icon: str,
+    status: str,
+    body: str,
+    note: str,
+    footer: str,
+) -> str:
+    status_class = "success" if status == "success" else "fail"
+    safe_title = html.escape(title)
+    safe_heading = html.escape(heading)
+    safe_icon = html.escape(status_icon)
+    safe_body = html.escape(body)
+    safe_note = html.escape(note)
+    safe_footer = html.escape(footer)
     return f"""<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{html.escape(title)}</title>
+  <title>{safe_title} — Fast Promo Videos Bot</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #657386;
+      --line: #dbe4ef;
+      --blue: #2388ff;
+      --blue-dark: #126fe0;
+      --green: #16a36a;
+      --red: #d64b4b;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at top left, rgba(35, 136, 255, 0.12), transparent 34rem), linear-gradient(180deg, #ffffff 0%, var(--bg) 72%);
+      color: var(--text);
+    }}
+    .page {{
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 48px 20px;
+    }}
+    .screen {{
+      width: min(620px, 100%);
+      min-height: 620px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 34px;
+      box-shadow: 0 24px 70px rgba(27, 39, 54, 0.12);
+      display: flex;
+      flex-direction: column;
+    }}
+    .brand {{
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: #2a3645;
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: auto;
+    }}
+    .logo {{
+      width: 46px;
+      height: 46px;
+      border-radius: 14px;
+      object-fit: cover;
+      box-shadow: 0 8px 20px rgba(22, 34, 51, 0.16);
+    }}
+    .content {{
+      text-align: center;
+      padding: 44px 0 36px;
+    }}
+    .status-icon {{
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      margin: 0 auto 22px;
+      font-size: 34px;
+      font-weight: 800;
+    }}
+    .success .status-icon {{
+      background: rgba(22, 163, 106, 0.12);
+      color: var(--green);
+    }}
+    .fail .status-icon {{
+      background: rgba(214, 75, 75, 0.12);
+      color: var(--red);
+    }}
+    h1 {{
+      margin: 0 0 16px;
+      font-size: clamp(30px, 6vw, 44px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }}
+    p {{
+      margin: 0;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.5;
+    }}
+    .note {{
+      margin: 24px auto 0;
+      max-width: 480px;
+      padding: 16px 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #f8fbff;
+      color: #4d5c70;
+      font-size: 15px;
+      line-height: 1.45;
+    }}
+    .actions {{
+      margin-top: 30px;
+      display: flex;
+      justify-content: center;
+    }}
+    .button {{
+      min-height: 52px;
+      padding: 0 24px;
+      border-radius: 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+      background: var(--blue);
+      color: white;
+      font-size: 17px;
+      font-weight: 700;
+      box-shadow: 0 12px 22px rgba(35, 136, 255, 0.28);
+    }}
+    .button:hover {{ background: var(--blue-dark); }}
+    .support {{
+      margin-top: auto;
+      border-top: 1px solid var(--line);
+      padding-top: 20px;
+      color: #718093;
+      font-size: 14px;
+      line-height: 1.45;
+      text-align: center;
+    }}
+    @media (max-width: 540px) {{
+      .page {{ padding: 20px 12px; }}
+      .screen {{
+        min-height: calc(100vh - 40px);
+        border-radius: 16px;
+        padding: 24px 18px;
+      }}
+      .brand {{ font-size: 15px; }}
+      .content {{ padding: 32px 0 28px; }}
+      p {{ font-size: 16px; }}
+      .button {{ width: 100%; }}
+    }}
+  </style>
 </head>
 <body>
-  <h1>{html.escape(title)}</h1>
-  <p>{html.escape(body)}</p>
-  <p><a href="https://t.me/fast_promo_videos_bot">Вернуться в бот</a></p>
+  <main class="page">
+    <section class="screen {status_class}">
+      <div class="brand">
+        <img class="logo" src="/static/fast-promo-logo.png" alt="">
+        <span>Fast Promo Videos Bot</span>
+      </div>
+      <div class="content">
+        <div class="status-icon">{safe_icon}</div>
+        <h1>{safe_heading}</h1>
+        <p>{safe_body}</p>
+        <div class="note">{safe_note}</div>
+        <div class="actions">
+          <a class="button" href="{BOT_URL}">Вернуться в Telegram</a>
+        </div>
+      </div>
+      <div class="support">{safe_footer}</div>
+    </section>
+  </main>
 </body>
 </html>"""
 
