@@ -20,6 +20,15 @@ SUBTITLE_CREDIT_MARKERS = (
     ("subtitles", "by"),
     ("caption", "by"),
 )
+TRANSCRIPTION_HALLUCINATION_MARKERS = (
+    ("продолжение", "следует"),
+    ("спасибо", "за", "просмотр"),
+    ("спасибо", "что", "посмотрели"),
+    ("подписывайтесь", "канал"),
+    ("ставьте", "лайки"),
+    ("thanks", "watching"),
+    ("to", "be", "continued"),
+)
 
 
 @dataclass(frozen=True)
@@ -95,8 +104,8 @@ async def transcribe_audio(audio_path: Path, api_key: str) -> list[SubtitleSegme
         if start is None or end is None or not text:
             continue
 
-        if _is_subtitle_credit_hallucination(text):
-            logger.info("Filtered likely subtitle hallucination: %s", text)
+        if _is_likely_hallucination(text):
+            logger.info("Filtered likely transcription hallucination: %s", text)
             continue
 
         result.append(
@@ -117,6 +126,7 @@ def _segment_value(segment, key: str):
     return getattr(segment, key, None)
 
 
-def _is_subtitle_credit_hallucination(text: str) -> bool:
+def _is_likely_hallucination(text: str) -> bool:
     normalized = " ".join(text.casefold().split())
-    return any(all(marker in normalized for marker in markers) for markers in SUBTITLE_CREDIT_MARKERS)
+    marker_groups = SUBTITLE_CREDIT_MARKERS + TRANSCRIPTION_HALLUCINATION_MARKERS
+    return any(all(marker in normalized for marker in markers) for markers in marker_groups)
