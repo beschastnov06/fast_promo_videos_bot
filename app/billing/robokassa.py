@@ -47,7 +47,6 @@ def ensure_robokassa_config(config: Config) -> None:
 
 def build_receipt(package: VideoPackage) -> str:
     receipt = {
-        "sno": "nps",
         "items": [
             {
                 "name": package.receipt_name,
