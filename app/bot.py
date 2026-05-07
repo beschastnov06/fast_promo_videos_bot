@@ -610,7 +610,11 @@ async def handle_top_up_menu_callback(callback: CallbackQuery) -> None:
         await callback.answer()
         return
 
-    await callback.message.edit_reply_markup(reply_markup=_top_up_keyboard())
+    balance_value = await _user_video_balance_from_telegram_user(callback.from_user)
+    await callback.message.edit_text(
+        _top_up_menu_text(balance_value),
+        reply_markup=_top_up_keyboard(),
+    )
     await callback.answer()
 
 
@@ -623,7 +627,11 @@ async def handle_back_to_menu_callback(callback: CallbackQuery) -> None:
         await callback.answer()
         return
 
-    await callback.message.edit_reply_markup(reply_markup=_menu_keyboard())
+    balance_value = await _user_video_balance_from_telegram_user(callback.from_user)
+    await callback.message.edit_text(
+        _menu_text(balance_value),
+        reply_markup=_menu_keyboard(),
+    )
     await callback.answer()
 
 
@@ -1271,6 +1279,13 @@ def _menu_text(balance_value: int) -> str:
     return (
         f"На вашем счете: {balance_value} видео\n\n"
         f"{_tariffs_text()}"
+    )
+
+
+def _top_up_menu_text(balance_value: int) -> str:
+    return (
+        f"{_menu_text(balance_value)}\n\n"
+        "Производя оплату, вы соглашаетесь с офертой и условиями обработки персональных данных."
     )
 
 
