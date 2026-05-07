@@ -11,6 +11,13 @@ logger = logging.getLogger(__name__)
 AUDIO_BITRATE = "32k"
 AUDIO_SAMPLE_RATE = "16000"
 TRANSCRIPTION_MODEL = "whisper-1"
+MAX_TRANSCRIPTION_ATTEMPTS = 2
+TRANSCRIPTION_RETRY_PROMPT = (
+    "Расшифруй только реально произнесенную речь из видео. "
+    "Не добавляй служебные фразы вроде 'Продолжение следует', "
+    "'Спасибо за просмотр', 'Субтитры сделал...' или похожие фразы, "
+    "если их нет в аудио."
+)
 SUBTITLE_CREDIT_MARKERS = (
     ("редактор", "субтитр"),
     ("корректор",),
@@ -85,14 +92,38 @@ async def transcribe_audio(audio_path: Path, api_key: str) -> list[SubtitleSegme
 
     logger.info("Starting transcription: %s", audio_path)
 
-    with audio_path.open("rb") as audio_file:
-        response = await client.audio.transcriptions.create(
-            model=TRANSCRIPTION_MODEL,
-            file=audio_file,
-            response_format="verbose_json",
-            timestamp_granularities=["segment"],
+    for attempt in range(1, MAX_TRANSCRIPTION_ATTEMPTS + 1):
+        response = await _request_transcription(
+            client=client,
+            audio_path=audio_path,
+            prompt=TRANSCRIPTION_RETRY_PROMPT if attempt > 1 else None,
         )
+        result = _subtitle_segments_from_response(response)
+        if result:
+            logger.info("Transcription finished: %s segments, attempt=%s", len(result), attempt)
+            return result
 
+        if attempt < MAX_TRANSCRIPTION_ATTEMPTS:
+            logger.info("Transcription returned no usable segments, retrying: attempt=%s", attempt)
+
+    logger.info("Transcription finished: 0 segments after %s attempts", MAX_TRANSCRIPTION_ATTEMPTS)
+    return []
+
+
+async def _request_transcription(client: AsyncOpenAI, audio_path: Path, prompt: str | None):
+    request = {
+        "model": TRANSCRIPTION_MODEL,
+        "response_format": "verbose_json",
+        "timestamp_granularities": ["segment"],
+    }
+    if prompt:
+        request["prompt"] = prompt
+
+    with audio_path.open("rb") as audio_file:
+        return await client.audio.transcriptions.create(file=audio_file, **request)
+
+
+def _subtitle_segments_from_response(response) -> list[SubtitleSegment]:
     segments = getattr(response, "segments", None) or []
     result: list[SubtitleSegment] = []
 
@@ -116,7 +147,6 @@ async def transcribe_audio(audio_path: Path, api_key: str) -> list[SubtitleSegme
             )
         )
 
-    logger.info("Transcription finished: %s segments", len(result))
     return result
 
 
