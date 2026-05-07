@@ -108,9 +108,15 @@ async def robokassa_result(request: web.Request) -> web.Response:
                 raw_provider_payload=params,
             )
             chat_id = payment.telegram_chat_id
+            invoice_message_id = payment.telegram_invoice_message_id
             credits_amount = payment.credits_amount
 
     if credited:
+        await _delete_invoice_message(
+            bot=bot,
+            chat_id=chat_id,
+            message_id=invoice_message_id,
+        )
         await _send_payment_success_message(
             bot=bot,
             chat_id=chat_id,
@@ -238,6 +244,25 @@ async def _send_payment_success_message(
             "Чек будет сформирован сервисом Робочеки СМЗ и отправлен на email, указанный при оплате."
         ),
     )
+
+
+async def _delete_invoice_message(
+    *,
+    bot: Bot,
+    chat_id: int,
+    message_id: int | None,
+) -> None:
+    if message_id is None:
+        return
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        logger.warning(
+            "Failed to delete Robokassa invoice message: chat_id=%s message_id=%s",
+            chat_id,
+            message_id,
+            exc_info=True,
+        )
 
 
 def _auto_submit_form(action_url: str, fields: dict[str, str]) -> str:

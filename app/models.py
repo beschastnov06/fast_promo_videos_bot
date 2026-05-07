@@ -133,6 +133,7 @@ class Payment(Base):
     )
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     telegram_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    telegram_invoice_message_id: Mapped[int | None] = mapped_column(BigInteger)
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     provider_payment_id: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False)

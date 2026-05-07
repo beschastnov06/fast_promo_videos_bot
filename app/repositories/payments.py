@@ -16,11 +16,13 @@ async def create_pending_payment(
     *,
     user_id: uuid.UUID,
     telegram_chat_id: int,
+    telegram_invoice_message_id: int | None,
     package: VideoPackage,
 ) -> Payment:
     payment = Payment(
         user_id=user_id,
         telegram_chat_id=telegram_chat_id,
+        telegram_invoice_message_id=telegram_invoice_message_id,
         provider="robokassa",
         status="pending",
         amount_cents=package.amount_cents,

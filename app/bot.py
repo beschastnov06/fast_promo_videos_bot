@@ -674,7 +674,7 @@ async def handle_buy_package_callback(callback: CallbackQuery) -> None:
         await callback.answer("Не удалось создать оплату", show_alert=True)
         return
 
-    await callback.message.answer(
+    await callback.message.edit_text(
         (
             f"Пакет: {package.title}\n"
             f"Стоимость: {package.price_rub} ₽\n\n"
@@ -685,7 +685,7 @@ async def handle_buy_package_callback(callback: CallbackQuery) -> None:
             inline_keyboard=[
                 [InlineKeyboardButton(text="Оплатить", url=payment_url)],
                 [InlineKeyboardButton(text="Оферта и условия", url=_offer_url())],
-                [InlineKeyboardButton(text="Назад", callback_data=BACK_TO_MENU_CALLBACK)],
+                [InlineKeyboardButton(text="Назад", callback_data=TOP_UP_MENU_CALLBACK)],
             ]
         ),
     )
@@ -1036,6 +1036,7 @@ async def _create_payment_url(callback: CallbackQuery, package) -> str:
                 session,
                 user_id=user.id,
                 telegram_chat_id=chat_id,
+                telegram_invoice_message_id=callback.message.message_id if callback.message else None,
                 package=package,
             )
             return payment_page_url(config, payment.invoice_id)
