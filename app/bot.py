@@ -22,11 +22,14 @@ from aiogram.types import (
 )
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from app.billing.packages import VIDEO_PACKAGES, package_by_videos_count
+from app.billing.robokassa import RobokassaConfigError, payment_page_url
 from app.config import Config, load_config
 from app.db import create_engine, create_session_factory
 from app.models import VideoJobSettings
 from app.queue import enqueue_render_job
 from app.repositories.credits import InsufficientCreditsError, add_credits, charge_credits, get_balance
+from app.repositories.payments import create_pending_payment
 from app.repositories.users import get_or_create_user
 from app.repositories.video_jobs import (
     create_draft_job,
@@ -104,11 +107,14 @@ VIDEO_SPEEDS = {
     1.50: "1.50x",
     2.00: "2.00x",
 }
-TARIFF_PACKAGES = (
-    (10, "10 видео", "99 ₽", None),
-    (25, "25 видео", "229 ₽", "скидка 7%"),
-    (50, "50 видео", "399 ₽", "скидка 19%"),
-    (100, "100 видео", "699 ₽", "скидка 29%"),
+TARIFF_PACKAGES = tuple(
+    (
+        package.videos_count,
+        package.title,
+        f"{package.price_rub} ₽",
+        package.discount,
+    )
+    for package in VIDEO_PACKAGES
 )
 
 
@@ -641,12 +647,49 @@ async def handle_buy_package_callback(callback: CallbackQuery) -> None:
     if not _is_allowed_callback(callback):
         await callback.answer("на этапе разработки", show_alert=True)
         return
+    if not callback.message:
+        await callback.answer()
+        return
 
     package_videos = callback.data.removeprefix(BUY_PACKAGE_CALLBACK_PREFIX) if callback.data else ""
-    await callback.answer(
-        f"Скоро здесь будет оплата пакета на {package_videos} видео",
-        show_alert=True,
+    try:
+        videos_count = int(package_videos)
+    except ValueError:
+        await callback.answer("Пакет не найден", show_alert=True)
+        return
+
+    package = package_by_videos_count(videos_count)
+    if package is None:
+        await callback.answer("Пакет не найден", show_alert=True)
+        return
+
+    try:
+        payment_url = await _create_payment_url(callback, package)
+    except RobokassaConfigError:
+        logger.exception("Robokassa config is incomplete")
+        await callback.answer("Оплата временно недоступна", show_alert=True)
+        return
+    except Exception:
+        logger.exception("Failed to create Robokassa payment")
+        await callback.answer("Не удалось создать оплату", show_alert=True)
+        return
+
+    await callback.message.answer(
+        (
+            f"Пакет: {package.title}\n"
+            f"Стоимость: {package.price_rub} ₽\n\n"
+            "Email для чека нужно будет указать на странице Robokassa.\n\n"
+            "Производя оплату, вы соглашаетесь с офертой и условиями обработки персональных данных."
+        ),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Оплатить", url=payment_url)],
+                [InlineKeyboardButton(text="Оферта и условия", url=_offer_url())],
+                [InlineKeyboardButton(text="Назад", callback_data=BACK_TO_MENU_CALLBACK)],
+            ]
+        ),
     )
+    await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("settings:"))
@@ -972,6 +1015,30 @@ async def _create_pending_job(
                 telegram_video_file_id=telegram_video_file_id,
                 telegram_video_file_unique_id=telegram_video_file_unique_id,
             )
+
+
+async def _create_payment_url(callback: CallbackQuery, package) -> str:
+    config = _app_config()
+    session_factory = _db_session_factory()
+    telegram_user = callback.from_user
+    chat_id = callback.message.chat.id if callback.message else telegram_user.id
+
+    async with session_factory() as session:
+        async with session.begin():
+            user = await get_or_create_user(
+                session,
+                telegram_user_id=telegram_user.id,
+                telegram_username=telegram_user.username,
+                first_name=telegram_user.first_name,
+                last_name=telegram_user.last_name,
+            )
+            payment = await create_pending_payment(
+                session,
+                user_id=user.id,
+                telegram_chat_id=chat_id,
+                package=package,
+            )
+            return payment_page_url(config, payment.invoice_id)
 
 
 async def _persist_pending_for_render(pending: PendingVideo) -> int:
@@ -1313,7 +1380,7 @@ def _menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Пополнить счет", callback_data=TOP_UP_MENU_CALLBACK)],
-            [InlineKeyboardButton(text="Оферта и условия", url=OFFER_URL)],
+            [InlineKeyboardButton(text="Оферта и условия", url=_offer_url())],
             [InlineKeyboardButton(text="Чат для вопросов", url=QUESTIONS_CHAT_URL)],
             [InlineKeyboardButton(text="Начать монтаж", callback_data=START_MONTAGE_CALLBACK)],
         ]
@@ -1333,6 +1400,12 @@ def _top_up_keyboard() -> InlineKeyboardMarkup:
         ]
         + [[InlineKeyboardButton(text="Назад", callback_data=BACK_TO_MENU_CALLBACK)]]
     )
+
+
+def _offer_url() -> str:
+    if app_config and app_config.robokassa_offer_url:
+        return app_config.robokassa_offer_url
+    return OFFER_URL
 
 
 def _queue_position_text(position: int) -> str:

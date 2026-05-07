@@ -31,6 +31,22 @@ services:
       - redis
     restart: unless-stopped
 
+  web:
+    build: .
+    command: python -m app.web
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://video_bot:video_bot@postgres:5432/video_bot
+      REDIS_URL: redis://redis:6379/0
+      TMP_DIR: /app/tmp
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
   postgres:
     image: postgres:16
     environment:

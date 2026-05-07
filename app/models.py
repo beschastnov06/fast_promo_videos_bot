@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, Numeric, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, JSON, Numeric, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -123,16 +124,35 @@ class Payment(Base):
     __tablename__ = "payments"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    invoice_id: Mapped[int] = mapped_column(
+        BigInteger,
+        unique=True,
+        nullable=False,
+        index=True,
+        server_default=text("nextval('payments_invoice_id_seq')"),
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    telegram_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     provider_payment_id: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(Text, nullable=False)
     credits_amount: Mapped[int] = mapped_column(Integer, nullable=False)
+    package_code: Mapped[str] = mapped_column(Text, nullable=False)
+    buyer_email: Mapped[str | None] = mapped_column(Text)
+    receipt_status: Mapped[str] = mapped_column(Text, nullable=False, default="unknown", server_default="unknown")
+    receipt_url: Mapped[str | None] = mapped_column(Text)
+    raw_provider_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
         nullable=False,
     )
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

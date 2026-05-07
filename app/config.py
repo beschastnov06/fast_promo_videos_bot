@@ -19,6 +19,15 @@ class Config:
     max_concurrent_renders: int
     render_job_timeout_seconds: int
     telegram_request_timeout_seconds: int
+    public_base_url: str | None
+    robokassa_merchant_login: str | None
+    robokassa_password1: str | None
+    robokassa_password2: str | None
+    robokassa_test_password1: str | None
+    robokassa_test_password2: str | None
+    robokassa_test_mode: bool
+    robokassa_hash_algorithm: str
+    robokassa_offer_url: str
 
 
 def load_config() -> Config:
@@ -45,6 +54,18 @@ def load_config() -> Config:
             default=600,
             minimum=60,
         ),
+        public_base_url=_normalize_url(os.getenv("PUBLIC_BASE_URL")),
+        robokassa_merchant_login=os.getenv("ROBOKASSA_MERCHANT_LOGIN"),
+        robokassa_password1=os.getenv("ROBOKASSA_PASSWORD1"),
+        robokassa_password2=os.getenv("ROBOKASSA_PASSWORD2"),
+        robokassa_test_password1=os.getenv("ROBOKASSA_TEST_PASSWORD1"),
+        robokassa_test_password2=os.getenv("ROBOKASSA_TEST_PASSWORD2"),
+        robokassa_test_mode=_parse_bool(os.getenv("ROBOKASSA_TEST_MODE"), default=False),
+        robokassa_hash_algorithm=os.getenv("ROBOKASSA_HASH_ALGORITHM", "md5").strip().lower(),
+        robokassa_offer_url=os.getenv(
+            "ROBOKASSA_OFFER_URL",
+            "https://telegra.ph/Oferta-usloviya-okazaniya-uslug-i-politika-obrabotki-personalnyh-dannyh-05-07",
+        ).strip(),
     )
 
 
@@ -77,3 +98,10 @@ def _parse_int(value: str | None, default: int, minimum: int | None = None) -> i
         return max(parsed_value, minimum)
 
     return parsed_value
+
+
+def _normalize_url(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+
+    return value.strip().rstrip("/")
