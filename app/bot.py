@@ -1286,7 +1286,7 @@ def _menu_text(balance_value: int) -> str:
 def _top_up_menu_text(balance_value: int) -> str:
     return (
         f"{_menu_text(balance_value)}\n\n"
-        "Производя оплату, вы соглашаетесь с офертой и условиями обработки персональных данных."
+        "Производя оплату, вы соглашаетесь с офертой и условиями обработки данных."
     )
 
 
