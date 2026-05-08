@@ -197,6 +197,7 @@ async def start(message: Message) -> None:
     if intro_bonus:
         added_videos, balance_value = intro_bonus
         await message.answer(_balance_added_text(added_videos=added_videos, balance_value=balance_value))
+        await _notify_new_user_start(message, balance_value=balance_value)
 
 
 @dp.message(Command("balance"))
@@ -1252,6 +1253,35 @@ async def _ensure_intro_bonus(message: Message) -> tuple[int, int] | None:
             user.intro_bonus_granted = True
             balance_value = await get_balance(session, user_id=user.id)
             return INTRO_BONUS_VIDEOS, balance_value
+
+
+async def _notify_new_user_start(message: Message, *, balance_value: int) -> None:
+    config = _app_config()
+    if config.admin_notify_chat_id is None:
+        return
+
+    telegram_user = message.from_user
+    if telegram_user is None:
+        return
+
+    username = f"@{telegram_user.username}" if telegram_user.username else "без username"
+    full_name = " ".join(
+        value
+        for value in (telegram_user.first_name, telegram_user.last_name)
+        if value
+    ) or "без имени"
+    text = (
+        "Новый пользователь нажал /start\n\n"
+        f"ID: {telegram_user.id}\n"
+        f"Username: {username}\n"
+        f"Имя: {full_name}\n"
+        f"Баланс после бонуса: {balance_value} видео"
+    )
+
+    try:
+        await message.bot.send_message(chat_id=config.admin_notify_chat_id, text=text)
+    except Exception:
+        logger.exception("Failed to send new user notification: user_id=%s", telegram_user.id)
 
 
 async def _user_video_balance(message: Message) -> int:

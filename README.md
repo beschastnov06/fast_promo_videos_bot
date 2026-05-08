@@ -164,6 +164,7 @@ OPENAI_API_KEY=
 DATABASE_URL=
 REDIS_URL=
 TMP_DIR=/app/tmp
+ADMIN_NOTIFY_CHAT_ID=
 PUBLIC_BASE_URL=https://your-web-service.up.railway.app
 ```
 

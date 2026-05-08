@@ -13,6 +13,7 @@ class Config:
     telegram_api_is_local: bool
     restrict_telegram_users: bool
     allowed_telegram_usernames: frozenset[str]
+    admin_notify_chat_id: int | None
     database_url: str | None
     redis_url: str | None
     tmp_dir: Path
@@ -44,6 +45,7 @@ def load_config() -> Config:
         telegram_api_is_local=os.getenv("TELEGRAM_API_IS_LOCAL", "").lower() in {"1", "true", "yes"},
         restrict_telegram_users=_parse_bool(os.getenv("RESTRICT_TELEGRAM_USERS"), default=False),
         allowed_telegram_usernames=_parse_usernames(os.getenv("ALLOWED_TELEGRAM_USERNAMES", "")),
+        admin_notify_chat_id=_parse_optional_int(os.getenv("ADMIN_NOTIFY_CHAT_ID")),
         database_url=os.getenv("DATABASE_URL"),
         redis_url=os.getenv("REDIS_URL"),
         tmp_dir=Path(os.getenv("TMP_DIR", "tmp")),
@@ -98,6 +100,16 @@ def _parse_int(value: str | None, default: int, minimum: int | None = None) -> i
         return max(parsed_value, minimum)
 
     return parsed_value
+
+
+def _parse_optional_int(value: str | None) -> int | None:
+    if value is None or not value.strip():
+        return None
+
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 def _normalize_url(value: str | None) -> str | None:
