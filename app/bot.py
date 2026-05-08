@@ -199,6 +199,9 @@ async def start(message: Message) -> None:
         added_videos, balance_value = intro_bonus
         await message.answer(_balance_added_text(added_videos=added_videos, balance_value=balance_value))
         await _notify_new_user_start(message, balance_value=balance_value)
+    elif _is_admin_user(message):
+        balance_value = await _user_video_balance(message)
+        await _notify_new_user_start(message, balance_value=balance_value)
 
 
 @dp.message(Command("balance"))
@@ -1515,6 +1518,17 @@ def _is_allowed_user(message: Message) -> bool:
         return False
 
     return username.casefold() in app_config.allowed_telegram_usernames
+
+
+def _is_admin_user(message: Message) -> bool:
+    if app_config is None:
+        return False
+
+    username = message.from_user.username if message.from_user else None
+    if not username:
+        return False
+
+    return username.casefold() in app_config.admins_usernames
 
 
 def _is_allowed_callback(callback: CallbackQuery) -> bool:
