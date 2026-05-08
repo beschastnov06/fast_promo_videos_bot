@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 from dataclasses import dataclass
 import logging
@@ -18,6 +20,9 @@ TRANSCRIPTION_RETRY_PROMPT = (
     "'Спасибо за просмотр', 'Субтитры сделал...' или похожие фразы, "
     "если их нет в аудио."
 )
+MAX_SUBTITLE_WORDS = 7
+MAX_SUBTITLE_DURATION_SECONDS = 4.5
+MIN_SUBTITLE_DURATION_SECONDS = 1.0
 SUBTITLE_CREDIT_MARKERS = (
     ("редактор", "субтитр"),
     ("корректор",),
@@ -114,7 +119,7 @@ async def _request_transcription(client: AsyncOpenAI, audio_path: Path, prompt: 
     request = {
         "model": TRANSCRIPTION_MODEL,
         "response_format": "verbose_json",
-        "timestamp_granularities": ["segment"],
+        "timestamp_granularities": ["word", "segment"],
     }
     if prompt:
         request["prompt"] = prompt
@@ -124,6 +129,10 @@ async def _request_transcription(client: AsyncOpenAI, audio_path: Path, prompt: 
 
 
 def _subtitle_segments_from_response(response) -> list[SubtitleSegment]:
+    word_segments = _subtitle_segments_from_words(getattr(response, "words", None) or [])
+    if word_segments:
+        return word_segments
+
     segments = getattr(response, "segments", None) or []
     result: list[SubtitleSegment] = []
 
@@ -139,13 +148,84 @@ def _subtitle_segments_from_response(response) -> list[SubtitleSegment]:
             logger.info("Filtered likely transcription hallucination: %s", text)
             continue
 
-        result.append(
-            SubtitleSegment(
-                start=float(start),
-                end=float(end),
-                text=text,
-            )
+        result.extend(_split_segment(SubtitleSegment(start=float(start), end=float(end), text=text)))
+
+    return result
+
+
+def _subtitle_segments_from_words(words) -> list[SubtitleSegment]:
+    result: list[SubtitleSegment] = []
+    chunk: list[tuple[float, float, str]] = []
+
+    for word in words:
+        start = _segment_value(word, "start")
+        end = _segment_value(word, "end")
+        text = str(_segment_value(word, "word") or "").strip()
+
+        if start is None or end is None or not text:
+            continue
+
+        chunk.append((float(start), float(end), text))
+        chunk_duration = chunk[-1][1] - chunk[0][0]
+        should_flush = (
+            len(chunk) >= MAX_SUBTITLE_WORDS
+            or chunk_duration >= MAX_SUBTITLE_DURATION_SECONDS
+            or _ends_sentence(text)
         )
+        if should_flush:
+            _append_word_chunk(result, chunk)
+            chunk = []
+
+    if chunk:
+        _append_word_chunk(result, chunk)
+
+    return [segment for segment in result if not _is_likely_hallucination(segment.text)]
+
+
+def _append_word_chunk(result: list[SubtitleSegment], chunk: list[tuple[float, float, str]]) -> None:
+    if not chunk:
+        return
+
+    start = chunk[0][0]
+    end = max(chunk[-1][1], start + MIN_SUBTITLE_DURATION_SECONDS)
+    result.append(SubtitleSegment(start=start, end=end, text=_join_words(chunk)))
+
+
+def _join_words(words: list[tuple[float, float, str]]) -> str:
+    return " ".join(word for _, _, word in words).strip()
+
+
+def _ends_sentence(text: str) -> bool:
+    return text.rstrip().endswith((".", "!", "?", "…"))
+
+
+def _split_segment(segment: SubtitleSegment) -> list[SubtitleSegment]:
+    duration = segment.end - segment.start
+    if duration <= MAX_SUBTITLE_DURATION_SECONDS:
+        return [segment]
+
+    words = segment.text.split()
+    if len(words) <= MAX_SUBTITLE_WORDS:
+        return [
+            SubtitleSegment(
+                start=segment.start,
+                end=min(segment.end, segment.start + MAX_SUBTITLE_DURATION_SECONDS),
+                text=segment.text,
+            )
+        ]
+
+    chunks = [
+        words[index : index + MAX_SUBTITLE_WORDS]
+        for index in range(0, len(words), MAX_SUBTITLE_WORDS)
+    ]
+    result: list[SubtitleSegment] = []
+    cursor = segment.start
+    for chunk in chunks:
+        end = min(segment.end, cursor + MAX_SUBTITLE_DURATION_SECONDS)
+        if end <= cursor:
+            break
+        result.append(SubtitleSegment(start=cursor, end=end, text=" ".join(chunk)))
+        cursor = end
 
     return result
 
