@@ -8,12 +8,13 @@ from dotenv import load_dotenv
 @dataclass(frozen=True)
 class Config:
     bot_token: str
+    admin_bot_token: str | None
     openai_api_key: str | None
     telegram_api_base: str | None
     telegram_api_is_local: bool
     restrict_telegram_users: bool
     allowed_telegram_usernames: frozenset[str]
-    admin_notify_chat_id: int | None
+    admins_usernames: frozenset[str]
     database_url: str | None
     redis_url: str | None
     tmp_dir: Path
@@ -31,21 +32,22 @@ class Config:
     robokassa_offer_url: str
 
 
-def load_config() -> Config:
+def load_config(*, require_bot_token: bool = True) -> Config:
     load_dotenv()
 
     bot_token = os.getenv("BOT_TOKEN")
-    if not bot_token:
+    if require_bot_token and not bot_token:
         raise RuntimeError("BOT_TOKEN is not set. Add it to .env or environment variables.")
 
     return Config(
-        bot_token=bot_token,
+        bot_token=bot_token or "",
+        admin_bot_token=os.getenv("ADMIN_BOT_TOKEN"),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         telegram_api_base=os.getenv("TELEGRAM_API_BASE"),
         telegram_api_is_local=os.getenv("TELEGRAM_API_IS_LOCAL", "").lower() in {"1", "true", "yes"},
         restrict_telegram_users=_parse_bool(os.getenv("RESTRICT_TELEGRAM_USERS"), default=False),
         allowed_telegram_usernames=_parse_usernames(os.getenv("ALLOWED_TELEGRAM_USERNAMES", "")),
-        admin_notify_chat_id=_parse_optional_int(os.getenv("ADMIN_NOTIFY_CHAT_ID")),
+        admins_usernames=_parse_usernames(os.getenv("ADMINS_USERNAME", "")),
         database_url=os.getenv("DATABASE_URL"),
         redis_url=os.getenv("REDIS_URL"),
         tmp_dir=Path(os.getenv("TMP_DIR", "tmp")),
@@ -100,16 +102,6 @@ def _parse_int(value: str | None, default: int, minimum: int | None = None) -> i
         return max(parsed_value, minimum)
 
     return parsed_value
-
-
-def _parse_optional_int(value: str | None) -> int | None:
-    if value is None or not value.strip():
-        return None
-
-    try:
-        return int(value)
-    except ValueError:
-        return None
 
 
 def _normalize_url(value: str | None) -> str | None:

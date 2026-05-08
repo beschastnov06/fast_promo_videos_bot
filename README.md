@@ -130,10 +130,12 @@ web service
 │   │   ├── packages.py      # тарифы и номенклатура
 │   │   └── robokassa.py     # формы оплаты, Receipt, подписи
 │   ├── repositories/
+│   │   ├── admin_subscribers.py
 │   │   ├── credits.py
 │   │   ├── payments.py
 │   │   ├── users.py
 │   │   └── video_jobs.py
+│   ├── admin_bot.py         # отдельный админ-бот
 │   ├── bot.py               # Telegram-сценарии
 │   ├── config.py            # переменные окружения
 │   ├── db.py                # SQLAlchemy engine/session
@@ -160,11 +162,12 @@ web service
 
 ```env
 BOT_TOKEN=
+ADMIN_BOT_TOKEN=
 OPENAI_API_KEY=
 DATABASE_URL=
 REDIS_URL=
 TMP_DIR=/app/tmp
-ADMIN_NOTIFY_CHAT_ID=
+ADMINS_USERNAME=
 PUBLIC_BASE_URL=https://your-web-service.up.railway.app
 ```
 
@@ -182,6 +185,8 @@ ROBOKASSA_OFFER_URL=https://telegra.ph/Oferta-usloviya-okazaniya-uslug-i-politik
 ```
 
 Секреты хранятся в Railway Variables или локальном `.env`; в git их не коммитим.
+
+`ADMIN_BOT_TOKEN` — токен отдельного бота для служебных уведомлений. `ADMINS_USERNAME` — список Telegram username через запятую, можно с `@` или без. Пользователи не из списка игнорируются админ-ботом без ответа.
 
 ## Локальный запуск
 
@@ -205,6 +210,7 @@ alembic upgrade head
 В production используются отдельные сервисы:
 
 - `fast_promo_videos_bot`: `python -m app.bot`;
+- `fast_promo_videos_admin_bot`: `python -m app.admin_bot`;
 - `fast_promo_videos_worker`: `python -m app.worker`;
 - `fast_promo_videos_web`: `python -m app.web`;
 - PostgreSQL;

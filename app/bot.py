@@ -28,6 +28,7 @@ from app.config import Config, load_config
 from app.db import create_engine, create_session_factory
 from app.models import VideoJobSettings
 from app.queue import enqueue_render_job
+from app.repositories.admin_subscribers import list_active_admin_subscribers
 from app.repositories.credits import InsufficientCreditsError, add_credits, charge_credits, get_balance
 from app.repositories.payments import create_pending_payment
 from app.repositories.users import get_or_create_user
@@ -1257,7 +1258,7 @@ async def _ensure_intro_bonus(message: Message) -> tuple[int, int] | None:
 
 async def _notify_new_user_start(message: Message, *, balance_value: int) -> None:
     config = _app_config()
-    if config.admin_notify_chat_id is None:
+    if not config.admin_bot_token:
         return
 
     telegram_user = message.from_user
@@ -1278,10 +1279,28 @@ async def _notify_new_user_start(message: Message, *, balance_value: int) -> Non
         f"Баланс после бонуса: {balance_value} видео"
     )
 
+    session_factory = _db_session_factory()
+    async with session_factory() as session:
+        subscribers = await list_active_admin_subscribers(session)
+    if not subscribers:
+        logger.info("No active admin subscribers for new user notification")
+        return
+
+    session = _create_session(config)
+    admin_bot = Bot(token=config.admin_bot_token, session=session) if session else Bot(token=config.admin_bot_token)
     try:
-        await message.bot.send_message(chat_id=config.admin_notify_chat_id, text=text)
+        for subscriber in subscribers:
+            try:
+                await admin_bot.send_message(chat_id=subscriber.telegram_chat_id, text=text)
+            except Exception:
+                logger.exception(
+                    "Failed to send new user notification to admin: admin_user_id=%s",
+                    subscriber.telegram_user_id,
+                )
     except Exception:
         logger.exception("Failed to send new user notification: user_id=%s", telegram_user.id)
+    finally:
+        await admin_bot.session.close()
 
 
 async def _user_video_balance(message: Message) -> int:

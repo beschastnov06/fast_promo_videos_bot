@@ -140,6 +140,7 @@ Worker временно хранит в `TMP_DIR/<job_id>/`:
 Локальное production-like окружение описано в `docker-compose.yml` и включает:
 
 - `bot`: `python -m app.bot`;
+- `admin_bot`: `python -m app.admin_bot`;
 - `worker`: `python -m app.worker`;
 - `web`: `python -m app.web`;
 - `postgres`;
@@ -150,6 +151,7 @@ Worker временно хранит в `TMP_DIR/<job_id>/`:
 Сервисы:
 
 - `fast_promo_videos_bot`: `python -m app.bot`;
+- `fast_promo_videos_admin_bot`: `python -m app.admin_bot`;
 - `fast_promo_videos_worker`: `python -m app.worker`;
 - `fast_promo_videos_web`: `python -m app.web`;
 - Railway PostgreSQL;
@@ -159,6 +161,7 @@ Worker временно хранит в `TMP_DIR/<job_id>/`:
 
 ```env
 BOT_TOKEN=
+ADMIN_BOT_TOKEN=
 OPENAI_API_KEY=
 DATABASE_URL=
 REDIS_URL=
@@ -166,9 +169,11 @@ TMP_DIR=/app/tmp
 MAX_CONCURRENT_RENDERS=1
 RENDER_JOB_TIMEOUT_SECONDS=900
 TELEGRAM_REQUEST_TIMEOUT_SECONDS=600
-ADMIN_NOTIFY_CHAT_ID=
+ADMINS_USERNAME=
 PUBLIC_BASE_URL=https://<web-service>.up.railway.app
 ```
+
+`ADMIN_BOT_TOKEN` нужен сервису `fast_promo_videos_admin_bot` и основному боту для отправки уведомлений. `ADMINS_USERNAME` — список Telegram username через запятую, можно с `@` или без. Перед получением уведомлений разрешенный админ должен один раз нажать `/start` в `@fast_promo_admin_bot`.
 
 Robokassa:
 

@@ -15,6 +15,20 @@ services:
       - redis
     restart: unless-stopped
 
+  admin_bot:
+    build: .
+    command: python -m app.admin_bot
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://video_bot:video_bot@postgres:5432/video_bot
+      REDIS_URL: redis://redis:6379/0
+      TMP_DIR: /app/tmp
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
   worker:
     build: .
     command: python -m app.worker
